@@ -1,6 +1,7 @@
 import asyncio
 import datetime
 import os
+import sys
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes, ConversationHandler, MessageHandler, filters
 from playwright.async_api import async_playwright
@@ -11,7 +12,7 @@ import logging
 # ============================================
 TOKEN = os.environ.get('BOT_TOKEN')
 if not TOKEN:
-    raise ValueError("BOT_TOKEN no configurado")
+    raise ValueError("BOT_TOKEN no configurado en variables de entorno")
 # ============================================
 
 ESPERANDO_USUARIO, ESPERANDO_CANCHA, ESPERANDO_HORA = range(3)
@@ -23,6 +24,34 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
 )
+
+# ============================================
+# INSTALACIÓN AUTOMÁTICA DE CHROMIUM
+# ============================================
+def install_chromium():
+    """Instala Chromium automáticamente si no existe"""
+    import subprocess
+    logging.info("🔍 Verificando instalación de Chromium...")
+    try:
+        subprocess.run(
+            [sys.executable, "-m", "playwright", "install", "chromium"],
+            check=True,
+            capture_output=True
+        )
+        subprocess.run(
+            [sys.executable, "-m", "playwright", "install-deps", "chromium"],
+            check=True,
+            capture_output=True
+        )
+        logging.info("✅ Chromium instalado correctamente")
+    except subprocess.CalledProcessError as e:
+        logging.warning(f"⚠️ Error instalando Chromium: {e}")
+    except Exception as e:
+        logging.warning(f"⚠️ Error inesperado: {e}")
+
+# ============================================
+# HANDLERS DE TELEGRAM
+# ============================================
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
@@ -139,7 +168,6 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def test_reserva(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Probar el sistema de reserva AHORA (sin esperar a las 17:50)"""
     user_id = update.effective_user.id
     
     if user_id not in user_data or not user_data[user_id].get('rut'):
@@ -181,12 +209,10 @@ async def reservar_auto(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     ahora = datetime.datetime.now()
     
-    # Calcular cuándo iniciar (17:50)
     if ahora.hour >= 18 and ahora.minute > 5:
         inicio = ahora.replace(hour=17, minute=50, second=0) + datetime.timedelta(days=1)
         dia_reserva = ahora + datetime.timedelta(days=2)
     elif ahora.hour == 17 and ahora.minute >= 50:
-        # Ya estamos en la ventana, iniciar YA
         await iniciar_reserva_inmediata(update, context)
         return
     else:
@@ -206,10 +232,9 @@ async def reservar_auto(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"1. Abrir navegador a las 17:50\n"
         f"2. Ingresar RUT\n"
         f"3. Buscar cancha disponible\n"
-        f"4. Refrescar cada 2 segundos (ultra rápido)\n"
+        f"4. Refrescar cada 2 segundos\n"
         f"5. Reservar apenas esté disponible\n\n"
-        f"⚡ Te avisaré cuando reserve exitosamente\n\n"
-        f"⚠️ NO APAGUES el bot hasta después de las 18:05",
+        f"⚡ Te avisaré cuando reserve exitosamente",
         parse_mode='Markdown'
     )
     
@@ -232,7 +257,6 @@ async def iniciar_reserva_inmediata(update: Update, context: ContextTypes.DEFAUL
     
     config = user_data[user_id]
     
-    # Ejecutar en background
     asyncio.create_task(
         ejecutar_reserva_loop(
             config['rut'],
@@ -271,7 +295,6 @@ async def callback_iniciar_reserva(context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def ejecutar_reserva_loop(rut, cancha, hora, chat_id, context, user_id):
-    """Loop principal de reserva automática"""
     reserva_en_proceso[user_id] = True
     
     ahora = datetime.datetime.now()
@@ -296,7 +319,6 @@ async def ejecutar_reserva_loop(rut, cancha, hora, chat_id, context, user_id):
                 reserva_en_proceso[user_id] = False
                 break
             
-            # Avisar cada 30 intentos (aprox cada 1 minuto con intervalos de 2 seg)
             if intentos % 30 == 0:
                 await context.bot.send_message(
                     chat_id=chat_id,
@@ -304,7 +326,7 @@ async def ejecutar_reserva_loop(rut, cancha, hora, chat_id, context, user_id):
                     parse_mode='Markdown'
                 )
             
-            await asyncio.sleep(2)  # Esperar 2 segundos entre intentos (OPTIMIZADO)
+            await asyncio.sleep(2)
             
         except Exception as e:
             if intentos % 10 == 0:
@@ -327,7 +349,6 @@ async def ejecutar_reserva_loop(rut, cancha, hora, chat_id, context, user_id):
             parse_mode='Markdown'
         )
         
-        # Reprogramar para mañana
         ahora = datetime.datetime.now()
         proxima = ahora.replace(hour=17, minute=50, second=0) + datetime.timedelta(days=1)
         segundos = (proxima - ahora).total_seconds()
@@ -340,12 +361,15 @@ async def ejecutar_reserva_loop(rut, cancha, hora, chat_id, context, user_id):
         )
 
 async def intentar_reserva(rut, cancha, hora, chat_id, context, modo_test=False):
-    """Intenta hacer una reserva usando Playwright"""
-    
     async with async_playwright() as p:
         browser = await p.chromium.launch(
-            headless=True,  # Cambiar a False para ver el navegador
-            args=['--disable-blink-features=AutomationControlled']
+            headless=True,
+            args=[
+                '--disable-blink-features=AutomationControlled',
+                '--no-sandbox',
+                '--disable-setuid-sandbox',
+                '--disable-dev-shm-usage'
+            ]
         )
         
         context_browser = await browser.new_context(
@@ -356,15 +380,12 @@ async def intentar_reserva(rut, cancha, hora, chat_id, context, modo_test=False)
         page = await context_browser.new_page()
         
         try:
-            # Ir a la página
             await page.goto("https://reservadehoras.lascondes.cl/#/agenda/28/agendar", timeout=30000)
             await page.wait_for_load_state("networkidle", timeout=15000)
             
-            # Buscar campo de RUT
             await page.wait_for_selector('input[name="rut"], input#rut, input[placeholder*="RUT"]', timeout=10000)
             await page.fill('input[name="rut"], input#rut, input[placeholder*="RUT"]', rut)
             
-            # Click en botón de ingreso/continuar
             await page.click('button[type="submit"], button:has-text("Ingresar"), button:has-text("Continuar")')
             await page.wait_for_timeout(2000)
             
@@ -378,22 +399,17 @@ async def intentar_reserva(rut, cancha, hora, chat_id, context, modo_test=False)
                     "Usa /auto para activar reserva automática"
                 )
             
-            # Calcular fecha (mañana)
             fecha_objetivo = datetime.datetime.now() + datetime.timedelta(days=1)
             fecha_str = fecha_objetivo.strftime("%Y-%m-%d")
             
-            # Buscar cancha disponible
             selector_hora = f'button.hora-disponible[data-hora="{hora}:00"], button:has-text("{hora}:00"):not([disabled])'
             
-            # Intentar encontrar hora disponible
             hora_elemento = await page.query_selector(selector_hora)
             
             if hora_elemento:
-                # ¡Encontró hora disponible!
                 await hora_elemento.click()
                 await page.wait_for_timeout(500)
                 
-                # Confirmar reserva
                 await page.click('button:has-text("Reservar"), button:has-text("Confirmar")')
                 await page.wait_for_timeout(1000)
                 
@@ -426,6 +442,10 @@ async def detener(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("⏸️ Bot detenido")
 
 def main():
+    # Instalar Chromium al iniciar
+    logging.info("🚀 Iniciando bot...")
+    install_chromium()
+    
     app = Application.builder().token(TOKEN).build()
     
     app.add_handler(CommandHandler("start", start))
@@ -445,10 +465,9 @@ def main():
     )
     app.add_handler(conv_handler)
     
-    print("🤖 Bot 100% automático iniciado")
-    print("🎯 Reserva automática con Playwright")
-    print("⚡ Refresh cada 2 segundos (ultra rápido)")
-    print("📱 Ctrl+C para detener")
+    logging.info("🤖 Bot 100% automático iniciado")
+    logging.info("🎯 Reserva automática con Playwright")
+    logging.info("⚡ Refresh cada 2 segundos")
     app.run_polling()
 
 if __name__ == "__main__":
