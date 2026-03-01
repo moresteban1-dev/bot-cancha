@@ -12,13 +12,7 @@ import logging
 # ============================================
 TOKEN = os.environ.get('BOT_TOKEN')
 if not TOKEN:
-    # Fallback para pruebas locales si tienes el token
-    # TOKEN = "TU_TOKEN_AQUI" 
-    pass
-
-if not TOKEN:
-    print("❌ ERROR: Variable BOT_TOKEN no encontrada.")
-    print("Por favor configúrala en Railway > Variables")
+    print("⚠️ ADVERTENCIA: Variable BOT_TOKEN no configurada.")
 # ============================================
 
 ESPERANDO_USUARIO, ESPERANDO_CANCHA, ESPERANDO_HORA = range(3)
@@ -31,24 +25,16 @@ logging.basicConfig(
     level=logging.INFO
 )
 
-# Instalar Chromium si es necesario
 def install_chromium():
     import subprocess
     try:
         subprocess.run([sys.executable, "-m", "playwright", "install", "chromium"], check=True)
-    except:
-        pass
+    except: pass
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "🎾 *Bot Reserva Automática Las Condes*\n\n"
-        "🤖 Versión FINAL (Botón Validar)\n\n"
-        "Comandos:\n"
-        "/config - Configurar datos\n"
-        "/auto - Activar reserva automática\n"
-        "/test - Probar conexión ahora\n"
-        "/detener - Detener bot\n"
-        "/status - Ver configuración",
+        "🎾 *Bot Reserva Las Condes - VALIDAR*\n\n"
+        "Comandos:\n/config - Configurar\n/test - Probar conexión\n/auto - Activar reserva\n/detener - Parar",
         parse_mode='Markdown'
     )
 
@@ -73,11 +59,7 @@ async def guardar_cancha(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def guardar_hora(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     user_data[user_id]['hora'] = int(update.message.text.strip())
-    config = user_data[user_id]
-    await update.message.reply_text(
-        f"✅ *Listo*\nRUT: {config['rut']}\nCancha: {config['cancha']}\nHora: {config['hora']}:00\n\nUsa /test para probar.",
-        parse_mode='Markdown'
-    )
+    await update.message.reply_text("✅ Configuración lista. Usa /test para probar.")
     return ConversationHandler.END
 
 async def cancelar(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -87,12 +69,92 @@ async def cancelar(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if user_id not in user_data:
-        await update.message.reply_text("No configurado.")
+        await update.message.reply_text("Sin configuración.")
         return
     c = user_data[user_id]
-    await update.message.reply_text(
-        f"📋 RUT: {c.get('rut')}\nCancha: {c.get('cancha')}\nHora: {c.get('hora')}:00"
-    )
+    await update.message.reply_text(f"RUT: {c.get('rut')}\nCancha: {c.get('cancha')}\nHora: {c.get('hora')}")
+
+# ==============================================================================
+# 🎯 FUNCIÓN CRÍTICA DE RESERVA
+# ==============================================================================
+async def intentar_reserva(rut, cancha, hora, chat_id, context, modo_test=False):
+    async with async_playwright() as p:
+        # Lanzar navegador
+        browser = await p.chromium.launch(
+            headless=True,
+            args=['--disable-blink-features=AutomationControlled', '--no-sandbox']
+        )
+        
+        # Contexto con tamaño de pantalla real
+        context_browser = await browser.new_context(
+            viewport={"width": 1366, "height": 768},
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        )
+        
+        page = await context_browser.new_page()
+        
+        try:
+            logging.info("📍 Navegando...")
+            await page.goto("https://reservadehoras.lascondes.cl/#/agenda/28/agendar", timeout=30000, wait_until="networkidle")
+            
+            # 1. Esperar y llenar RUT
+            logging.info("🔍 Buscando input RUT...")
+            # Selector específico para Ant Design
+            await page.wait_for_selector('input.ant-input', timeout=15000)
+            await page.fill('input.ant-input', rut)
+            
+            # 2. BUSCAR BOTÓN VALIDAR (Aquí estaba el error antes)
+            logging.info("🔍 Buscando botón Validar...")
+            
+            # Hacemos click específicamente en el botón que contiene "Validar"
+            # Usamos un selector robusto de Playwright
+            btn_validar = page.locator("button", has_text="Validar")
+            
+            if await btn_validar.count() > 0:
+                await btn_validar.first.click()
+                logging.info("✅ Click en Validar")
+            else:
+                # Fallback: intentar Enter
+                logging.warning("⚠️ No encontré botón Validar, probando Enter...")
+                await page.press('input.ant-input', 'Enter')
+
+            await page.wait_for_timeout(3000)
+
+            # MODO TEST: Verificar si pasamos el login
+            if modo_test:
+                # Si todavía vemos el botón Validar, es que falló
+                if await btn_validar.count() > 0 and await btn_validar.first.is_visible():
+                    msg = "⚠️ El botón se clickeó pero la página no avanzó. ¿RUT válido?"
+                else:
+                    msg = "✅ **TEST EXITOSO**\n\nLogin superado (botón Validar funcionó).\nEl bot está listo para reservar."
+                
+                await browser.close()
+                return msg
+
+            # 3. BUSCAR HORA Y RESERVAR
+            logging.info(f"🔍 Buscando hora {hora}:00...")
+            
+            # Selector para el botón de la hora específica
+            hora_btn = page.locator(f"button", has_text=f"{hora}:00")
+            
+            if await hora_btn.count() > 0:
+                await hora_btn.first.click()
+                
+                # Confirmar
+                await page.wait_for_timeout(500)
+                await page.click('button:has-text("Confirmar"), button:has-text("Reservar")')
+                
+                await browser.close()
+                return f"🎉 **RESERVADA**\nCancha: {cancha}\nHora: {hora}:00"
+            
+            await browser.close()
+            return "NO_DISPONIBLE"
+
+        except Exception as e:
+            await browser.close()
+            raise e
+
+# ==============================================================================
 
 async def test_reserva(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -100,7 +162,7 @@ async def test_reserva(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Usa /config primero")
         return
     
-    await update.message.reply_text("🧪 Probando 'Validar'...")
+    await update.message.reply_text("🧪 Probando conexión con botón 'Validar'...")
     config = user_data[user_id]
     
     try:
@@ -114,10 +176,8 @@ async def reservar_auto(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if user_id not in user_data:
         await update.message.reply_text("Usa /config primero")
         return
-
-    ahora = datetime.datetime.now()
     
-    # Lógica de horario (17:50)
+    ahora = datetime.datetime.now()
     if ahora.hour >= 18 and ahora.minute > 5:
         inicio = ahora.replace(hour=17, minute=50, second=0) + datetime.timedelta(days=1)
     elif ahora.hour == 17 and ahora.minute >= 50:
@@ -125,10 +185,9 @@ async def reservar_auto(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     else:
         inicio = ahora.replace(hour=17, minute=50, second=0)
-
-    secs = (inicio - ahora).total_seconds()
     
-    await update.message.reply_text(f"⏰ Programado para las 17:50 ({int(secs//60)} min).")
+    secs = (inicio - ahora).total_seconds()
+    await update.message.reply_text(f"⏰ Automático activado para las 17:50 ({int(secs//60)} min).")
     context.job_queue.run_once(callback_iniciar_reserva, when=secs, data={'user_id': user_id, 'chat_id': update.effective_chat.id}, name=f'inicio_{user_id}')
 
 async def iniciar_reserva_inmediata(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -139,7 +198,7 @@ async def iniciar_reserva_inmediata(update: Update, context: ContextTypes.DEFAUL
 async def callback_iniciar_reserva(context: ContextTypes.DEFAULT_TYPE):
     data = context.job.data
     config = user_data[data['user_id']]
-    await context.bot.send_message(data['chat_id'], "🔴 Iniciando automátic...")
+    await context.bot.send_message(data['chat_id'], "🔴 Iniciando...")
     asyncio.create_task(ejecutar_reserva_loop(config['rut'], config['cancha'], config['hora'], data['chat_id'], context, data['user_id']))
 
 async def ejecutar_reserva_loop(rut, cancha, hora, chat_id, context, user_id):
@@ -157,95 +216,11 @@ async def ejecutar_reserva_loop(rut, cancha, hora, chat_id, context, user_id):
                 await context.bot.send_message(chat_id, res)
                 break
             if intentos % 30 == 0:
-                await context.bot.send_message(chat_id, f"🔄 Intento {intentos}...")
+                await context.bot.send_message(chat_id, f"🔄 Buscando ({intentos})...")
             await asyncio.sleep(2)
         except:
             await asyncio.sleep(2)
-    
     reserva_en_proceso[user_id] = False
-
-async def intentar_reserva(rut, cancha, hora, chat_id, context, modo_test=False):
-    async with async_playwright() as p:
-        browser = await p.chromium.launch(
-            headless=True,
-            args=['--disable-blink-features=AutomationControlled', '--no-sandbox']
-        )
-        context_browser = await browser.new_context(
-            viewport={"width": 1280, "height": 720},
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-        )
-        page = await context_browser.new_page()
-        
-        try:
-            logging.info("Navegando...")
-            await page.goto("https://reservadehoras.lascondes.cl/#/agenda/28/agendar", timeout=60000)
-            
-            # 1. Esperar campo RUT
-            logging.info("Buscando RUT...")
-            await page.wait_for_selector('input[name="rut"]', state='visible', timeout=20000)
-            
-            # 2. Llenar RUT
-            await page.fill('input[name="rut"]', rut)
-            
-            # 3. CLICK EN "VALIDAR" (La clave de todo)
-            logging.info("Buscando botón Validar...")
-            
-            # Probamos varios selectores para asegurar el click en "Validar"
-            boton_encontrado = False
-            
-            # Estrategia A: Texto exacto
-            if not boton_encontrado:
-                try:
-                    await page.click('text="Validar"', timeout=3000)
-                    boton_encontrado = True
-                except: pass
-
-            # Estrategia B: Botón que contiene texto
-            if not boton_encontrado:
-                try:
-                    await page.click('button:has-text("Validar")', timeout=3000)
-                    boton_encontrado = True
-                except: pass
-                
-            # Estrategia C: Enter en el input (a veces activa el form)
-            if not boton_encontrado:
-                await page.press('input[name="rut"]', 'Enter')
-                boton_encontrado = True
-
-            if modo_test:
-                await page.wait_for_timeout(3000)
-                # Verificar si pasó
-                if await page.query_selector('text=Validar') and not await page.query_selector('.hora-disponible'):
-                     msg = "⚠️ Botón clickeado, pero parece que seguimos en el login. Verifica RUT."
-                else:
-                     msg = "✅ **TEST EXITOSO**\n\nBotón 'Validar' presionado correctamente.\nLogin superado."
-                
-                await browser.close()
-                return msg
-
-            # === FASE DE RESERVA ===
-            
-            # Esperar a que carguen las horas (puede tardar un poco tras validar)
-            await page.wait_for_timeout(2000)
-            
-            # Buscar hora específica
-            try:
-                # Selector genérico para cualquier botón que tenga la hora (ej: "19:00")
-                await page.click(f'button:has-text("{hora}:00")', timeout=2000)
-                
-                # Confirmar
-                await page.wait_for_timeout(500)
-                await page.click('button:has-text("Confirmar"), button:has-text("Reservar")', timeout=5000)
-                
-                await browser.close()
-                return f"🎉🎉🎉 **CANCHA RESERVADA** 🎉🎉🎉\n\nCancha: {cancha}\nHora: {hora}:00"
-            except:
-                await browser.close()
-                return "NO_DISPONIBLE"
-
-        except Exception as e:
-            await browser.close()
-            raise e
 
 async def detener(update: Update, context: ContextTypes.DEFAULT_TYPE):
     reserva_en_proceso[update.effective_user.id] = False
@@ -257,9 +232,9 @@ def main():
     app = Application.builder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("config", config))
-    app.add_handler(CommandHandler("status", status))
     app.add_handler(CommandHandler("test", test_reserva))
     app.add_handler(CommandHandler("auto", reservar_auto))
+    app.add_handler(CommandHandler("status", status))
     app.add_handler(CommandHandler("detener", detener))
     
     # Conversación
