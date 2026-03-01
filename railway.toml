@@ -1,8 +1,0 @@
-[build]
-builder = "dockerfile"
-dockerfilePath = "Dockerfile"
-
-[deploy]
-startCommand = "python -u bot_auto.py"
-restartPolicyType = "on_failure"
-restartPolicyMaxRetries = 10
