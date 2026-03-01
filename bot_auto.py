@@ -61,15 +61,16 @@ def formatear_rut(rut_limpio):
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "Bot Reserva Automatica Las Condes\n\n"
+        "Bot Reserva Automatica Canchas Las Condes\n\n"
         "Comandos:\n"
-        "/config - Configurar RUT y hora\n"
-        "/test - Probar conexion\n"
+        "/config - Configurar RUT y hora de juego\n"
+        "/test - Probar conexion y validacion\n"
         "/auto - Activar reserva automatica\n"
         "/detener - Detener bot\n"
         "/status - Ver configuracion\n\n"
-        "NOTA: La cancha se asigna automaticamente\n"
-        "Solo necesitas elegir la hora"
+        "El bot trabaja de Martes a Sabado\n"
+        "Se activa a las 17:55 y busca cada 2 seg\n"
+        "hasta las 18:10 para tomar hora del dia siguiente"
     )
 
 async def config(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -96,7 +97,6 @@ async def guardar_usuario(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     dv_ingresado = rut_raw[-1]
     cuerpo = rut_raw[:-1]
-    
     dv_correcto = calcular_dv(cuerpo)
     
     if dv_correcto and dv_ingresado != dv_correcto:
@@ -115,12 +115,9 @@ async def guardar_usuario(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     await update.message.reply_text(
         f"RUT validado: {rut_formateado}\n\n"
-        "A que hora quieres jugar?\n\n"
-        "Opciones disponibles:\n"
-        "18 - para las 18:00\n"
-        "19 - para las 19:00\n"
-        "20 - para las 20:00\n\n"
-        "Escribe el numero:"
+        "A que hora quieres JUGAR manana?\n\n"
+        "Escribe la hora (ejemplo: 7, 8, 9, 10... hasta 21)\n"
+        "El bot buscara esa hora especifica:"
     )
     return ESPERANDO_HORA
 
@@ -128,9 +125,10 @@ async def guardar_hora(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     hora = update.message.text.strip()
     
-    if hora not in ['18', '19', '20']:
+    if not hora.isdigit() or int(hora) < 7 or int(hora) > 21:
         await update.message.reply_text(
-            "Hora invalida. Solo 18, 19 o 20.\n"
+            "Hora invalida. Entre 7 y 21.\n"
+            "Ejemplo: 9 para las 9:00\n"
             "Intenta de nuevo:"
         )
         return ESPERANDO_HORA
@@ -141,10 +139,12 @@ async def guardar_hora(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         f"Configuracion completada!\n\n"
         f"RUT: {cfg['rut']}\n"
-        f"Hora: {cfg['hora']}:00\n"
+        f"Hora de juego: {cfg['hora']}:00\n"
         f"Cancha: asignacion automatica\n\n"
-        f"SIGUIENTE: Envia /test para probar\n"
-        f"Luego /auto para activar"
+        f"El bot buscara {cfg['hora']}:00 para manana\n"
+        f"entre las 17:55 y 18:10 de hoy\n\n"
+        f"SIGUIENTE: /test para probar\n"
+        f"Luego: /auto para activar"
     )
     return ConversationHandler.END
 
@@ -161,27 +161,33 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     cfg = user_data[user_id]
     ahora = datetime.datetime.now()
+    dia_semana = ahora.weekday()
     
-    if ahora.hour >= 18 and ahora.minute > 5:
+    # Verificar si hoy es dia de reserva (Lun-Vie para Mar-Sab)
+    dias_reserva = {0: "Martes", 1: "Miercoles", 2: "Jueves", 3: "Viernes", 4: "Sabado"}
+    
+    if ahora.hour >= 18 and ahora.minute > 10:
         proxima = ahora.replace(hour=17, minute=55, second=0) + datetime.timedelta(days=1)
     else:
         proxima = ahora.replace(hour=17, minute=55, second=0)
         if ahora > proxima:
             proxima += datetime.timedelta(days=1)
     
+    dia_juego = proxima + datetime.timedelta(days=1)
+    
     estado = "ACTIVO" if reserva_en_proceso.get(user_id, False) else "Inactivo"
     
     await update.message.reply_text(
         f"Configuracion actual\n\n"
         f"RUT: {cfg.get('rut')}\n"
-        f"Hora: {cfg.get('hora')}:00\n"
-        f"Cancha: asignacion automatica\n\n"
-        f"Proxima ejecucion: {proxima.strftime('%d/%m %H:%M')}\n"
+        f"Hora de juego: {cfg.get('hora')}:00\n\n"
+        f"Proxima ventana: {proxima.strftime('%d/%m %H:%M')}\n"
+        f"Para jugar: {dia_juego.strftime('%A %d/%m')}\n\n"
         f"Estado: {estado}"
     )
 
 async def test_reserva(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """TEST COMPLETO: valida RUT, selecciona hora, llega hasta confirmar"""
+    """TEST: valida RUT, muestra horas disponibles, NO reserva"""
     user_id = update.effective_user.id
     
     if user_id not in user_data or not user_data[user_id].get('rut'):
@@ -194,7 +200,7 @@ async def test_reserva(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         f"TEST iniciado...\n\n"
         f"RUT: {cfg['rut']}\n"
-        f"Hora: {hora_deseada}\n\n"
+        f"Hora buscada: {hora_deseada}\n\n"
         f"Abriendo navegador..."
     )
     
@@ -227,9 +233,6 @@ async def test_reserva(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await rut_input.type(cfg['rut_raw'], delay=100)
             await page.wait_for_timeout(500)
             
-            ss1 = await page.screenshot()
-            await update.message.reply_photo(photo=ss1, caption="Paso 1: RUT ingresado")
-            
             # PASO 3: Validar
             boton_validar = await page.wait_for_selector('button:has-text("Validar")', timeout=5000)
             await boton_validar.click()
@@ -244,78 +247,83 @@ async def test_reserva(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await browser.close()
                 return
             
-            ss2 = await page.screenshot()
-            await update.message.reply_photo(photo=ss2, caption="Paso 2: RUT validado, veo las horas")
+            ss1 = await page.screenshot()
+            await update.message.reply_photo(photo=ss1, caption="RUT validado - Horas visibles")
             
-            # PASO 4: Buscar boton de hora
-            await update.message.reply_text(f"Buscando boton {hora_deseada}...")
+            # PASO 4: Analizar horas disponibles
+            botones = await page.query_selector_all('button')
             
+            horas_encontradas = []
+            info = "HORAS EN PAGINA:\n\n"
+            
+            for btn in botones:
+                texto = (await btn.inner_text()).strip()
+                clase = await btn.get_attribute('class') or ''
+                esta_disabled = await btn.is_disabled()
+                
+                # Detectar botones de hora (formato X:00 o XX:00)
+                if ':00' in texto and len(texto) <= 5:
+                    estado_hora = "DISPONIBLE" if not esta_disabled else "NO DISPONIBLE"
+                    marcador = ">>>" if texto == hora_deseada else "   "
+                    info += f"{marcador} {texto} - {estado_hora} (class: {clase[:30]})\n"
+                    horas_encontradas.append({
+                        'texto': texto,
+                        'disponible': not esta_disabled,
+                        'clase': clase
+                    })
+            
+            if not horas_encontradas:
+                info += "No se encontraron botones de hora\n"
+                info += "\nTodos los botones:\n"
+                for btn in botones:
+                    texto = (await btn.inner_text()).strip()
+                    info += f"  - '{texto[:40]}'\n"
+            
+            await update.message.reply_text(info)
+            
+            # Buscar hora deseada
             boton_hora = await page.query_selector(f'button:has-text("{hora_deseada}")')
             
             if boton_hora:
-                # Verificar si esta habilitado
-                clase = await boton_hora.get_attribute('class') or ''
                 esta_disabled = await boton_hora.is_disabled()
-                
-                await update.message.reply_text(
-                    f"Boton {hora_deseada} encontrado!\n"
-                    f"Clase: {clase}\n"
-                    f"Deshabilitado: {esta_disabled}\n\n"
-                    f"Clickeando..."
-                )
-                
                 if not esta_disabled:
-                    await boton_hora.click()
-                    await page.wait_for_timeout(1000)
-                    
-                    ss3 = await page.screenshot()
-                    await update.message.reply_photo(photo=ss3, caption=f"Paso 3: Hora {hora_deseada} seleccionada")
-                    
-                    # PASO 5: Buscar "Ok, programar"
-                    boton_programar = await page.query_selector('button:has-text("Ok, programar")')
-                    
-                    if boton_programar:
-                        esta_disabled_prog = await boton_programar.is_disabled()
-                        clase_prog = await boton_programar.get_attribute('class') or ''
-                        
-                        await update.message.reply_text(
-                            f"Boton 'Ok, programar' encontrado!\n"
-                            f"Clase: {clase_prog}\n"
-                            f"Deshabilitado: {esta_disabled_prog}\n\n"
-                            f"EN MODO TEST NO SE HACE CLICK AQUI\n"
-                            f"(para no gastar tu reserva)\n\n"
-                            f"Todo funciona correctamente!"
-                        )
-                        
-                        ss4 = await page.screenshot()
-                        await update.message.reply_photo(photo=ss4, caption="Paso 4: Listo para confirmar (no se clickea en test)")
-                    else:
-                        await update.message.reply_text("No se encontro boton 'Ok, programar'")
+                    await update.message.reply_text(
+                        f"Hora {hora_deseada} DISPONIBLE!\n\n"
+                        f"En modo TEST no se reserva.\n"
+                        f"Usa /auto para reservar automaticamente."
+                    )
                 else:
                     await update.message.reply_text(
-                        f"Boton {hora_deseada} esta DESHABILITADO\n"
-                        f"Esa hora no esta disponible ahora\n"
-                        f"(es normal, se habilitan a las 18:00)"
+                        f"Hora {hora_deseada} existe pero NO disponible.\n"
+                        f"Normal si no es horario de reserva (17:55-18:10).\n\n"
+                        f"Usa /auto para que el bot espere y reserve."
                     )
             else:
-                # Listar botones disponibles
-                botones = await page.query_selector_all('button')
-                info = f"No encontre boton {hora_deseada}\n\nBotones disponibles:\n"
-                for btn in botones:
-                    texto = await btn.inner_text()
-                    info += f"  - '{texto}'\n"
-                await update.message.reply_text(info)
+                await update.message.reply_text(
+                    f"Hora {hora_deseada} no aparece en pantalla.\n"
+                    f"Puede que aparezca cuando se abran las reservas.\n\n"
+                    f"Usa /auto para que el bot busque automaticamente."
+                )
+            
+            # Buscar si hay navegacion de fecha (boton "siguiente")
+            btn_siguiente = await page.query_selector('button:has-text("siguiente"), a:has-text("siguiente"), *:has-text("siguiente")')
+            if btn_siguiente:
+                await update.message.reply_text("Boton 'siguiente' encontrado (para cambiar fecha)")
+            
+            # Screenshot final
+            await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+            await page.wait_for_timeout(500)
+            ss2 = await page.screenshot(full_page=True)
+            await update.message.reply_photo(photo=ss2, caption="Pagina completa")
             
             await browser.close()
             
             await update.message.reply_text(
                 "TEST COMPLETADO!\n\n"
-                "Si todo salio bien, usa /auto\n"
-                "para activar la reserva automatica.\n\n"
-                "El bot esperara hasta las 17:55,\n"
-                "abrira el navegador, validara tu RUT,\n"
-                "y a las 18:00 clickeara la hora\n"
-                "y confirmara automaticamente."
+                "Si el RUT fue validado correctamente,\n"
+                "usa /auto para activar la reserva.\n\n"
+                "El bot se activara a las 17:55\n"
+                "y buscara cada 2 segundos hasta las 18:10"
             )
             
     except Exception as e:
@@ -329,33 +337,41 @@ async def reservar_auto(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     ahora = datetime.datetime.now()
+    dia_semana = ahora.weekday()  # 0=Lunes, 6=Domingo
     
-    # Calcular inicio: 17:55 (5 min antes de las 18:00)
-    if ahora.hour >= 18 and ahora.minute > 5:
-        inicio = ahora.replace(hour=17, minute=55, second=0) + datetime.timedelta(days=1)
-    elif (ahora.hour == 17 and ahora.minute >= 55) or (ahora.hour == 18 and ahora.minute <= 5):
+    # Calcular inicio: 17:55
+    if ahora.hour >= 18 and ahora.minute > 10:
+        # Ya paso la ventana de hoy, programar para manana
+        inicio = ahora.replace(hour=17, minute=55, second=0, microsecond=0) + datetime.timedelta(days=1)
+    elif (ahora.hour == 17 and ahora.minute >= 55) or (ahora.hour == 18 and ahora.minute <= 10):
+        # Estamos en la ventana, iniciar YA
         await iniciar_reserva_inmediata(update, context)
         return
     else:
-        inicio = ahora.replace(hour=17, minute=55, second=0)
+        inicio = ahora.replace(hour=17, minute=55, second=0, microsecond=0)
+    
+    # Saltar domingos y lunes (no hay reserva para lunes/martes... ajustar segun reglas)
+    dia_inicio = inicio.weekday()
+    if dia_inicio == 6:  # Domingo -> saltar a Lunes
+        inicio += datetime.timedelta(days=1)
     
     segundos_hasta = (inicio - ahora).total_seconds()
     horas = int(segundos_hasta // 3600)
     minutos = int((segundos_hasta % 3600) // 60)
     
+    dia_juego = inicio + datetime.timedelta(days=1)
+    
     reserva_en_proceso[user_id] = True
     
     await update.message.reply_text(
-        f"Reserva automatica ACTIVADA\n\n"
+        f"RESERVA AUTOMATICA ACTIVADA\n\n"
         f"RUT: {user_data[user_id]['rut']}\n"
-        f"Hora: {user_data[user_id]['hora']}:00\n\n"
-        f"Iniciara: {inicio.strftime('%d/%m a las %H:%M')}\n"
+        f"Hora de juego: {user_data[user_id]['hora']}:00\n\n"
+        f"Se activara: {inicio.strftime('%A %d/%m a las %H:%M')}\n"
+        f"Para jugar: {dia_juego.strftime('%A %d/%m')}\n"
         f"Faltan: {horas}h {minutos}m\n\n"
-        f"El bot hara:\n"
-        f"1. 17:55 - Abrir navegador y validar RUT\n"
-        f"2. 17:59 - Empezar a buscar hora\n"
-        f"3. 18:00 - Clickear hora apenas aparezca\n"
-        f"4. Confirmar con 'Ok, programar'\n\n"
+        f"Ventana: 17:55 a 18:10\n"
+        f"Velocidad: cada 2 seg (30 intentos/min)\n\n"
         f"Te avisare cuando reserve!"
     )
     
@@ -390,7 +406,7 @@ async def callback_iniciar_reserva(context: ContextTypes.DEFAULT_TYPE):
     user_id = data['user_id']
     chat_id = data['chat_id']
     
-    await context.bot.send_message(chat_id=chat_id, text="RESERVA AUTOMATICA INICIADA!")
+    await context.bot.send_message(chat_id=chat_id, text="RESERVA AUTOMATICA INICIADA!\nAbriendo navegador...")
     
     cfg = user_data[user_id]
     
@@ -406,7 +422,7 @@ async def callback_iniciar_reserva(context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def ejecutar_reserva_loop(rut_raw, rut_formateado, hora, chat_id, context, user_id):
-    """Loop principal de reserva automatica"""
+    """Loop principal: valida RUT y busca hora cada 2 segundos"""
     reserva_en_proceso[user_id] = True
     
     hora_deseada = f"{hora}:00"
@@ -417,6 +433,7 @@ async def ejecutar_reserva_loop(rut_raw, rut_formateado, hora, chat_id, context,
         fin_ventana += datetime.timedelta(days=1)
     
     intentos = 0
+    reserva_exitosa = False
     
     try:
         async with async_playwright() as p:
@@ -437,25 +454,22 @@ async def ejecutar_reserva_loop(rut_raw, rut_formateado, hora, chat_id, context,
             
             page = await ctx_browser.new_page()
             
-            # FASE 1: Cargar pagina y validar RUT
-            await context.bot.send_message(chat_id=chat_id, text="Fase 1: Abriendo pagina...")
+            # FASE 1: Cargar y validar RUT
+            await context.bot.send_message(chat_id=chat_id, text="Fase 1: Cargando pagina...")
             
             await page.goto("https://reservadehoras.lascondes.cl/#/agenda/28/agendar", timeout=30000)
             await page.wait_for_load_state("networkidle", timeout=15000)
             
-            # Escribir RUT
             rut_input = await page.wait_for_selector('input[name="rut"]', timeout=10000)
             await rut_input.click()
             await rut_input.type(rut_raw, delay=100)
             await page.wait_for_timeout(500)
             
-            # Validar
             boton_validar = await page.wait_for_selector('button:has-text("Validar")', timeout=5000)
             await boton_validar.click()
             await page.wait_for_timeout(3000)
             await page.wait_for_load_state("networkidle", timeout=10000)
             
-            # Verificar validacion
             body_text = await page.inner_text('body')
             if "rut válido" in body_text.lower():
                 await context.bot.send_message(chat_id=chat_id, text="ERROR: RUT no validado. Abortando.")
@@ -465,12 +479,12 @@ async def ejecutar_reserva_loop(rut_raw, rut_formateado, hora, chat_id, context,
             
             await context.bot.send_message(
                 chat_id=chat_id,
-                text=f"Fase 1 completada: RUT validado\n"
+                text=f"RUT validado OK!\n"
                      f"Buscando hora {hora_deseada}...\n"
-                     f"Refrescando cada 2 segundos"
+                     f"30 intentos por minuto hasta las 18:10"
             )
             
-            # FASE 2: LOOP - Buscar y reservar
+            # FASE 2: LOOP cada 2 segundos
             while datetime.datetime.now() < fin_ventana and reserva_en_proceso.get(user_id, False):
                 intentos += 1
                 
@@ -480,19 +494,19 @@ async def ejecutar_reserva_loop(rut_raw, rut_formateado, hora, chat_id, context,
                     
                     if boton_hora:
                         esta_disabled = await boton_hora.is_disabled()
-                        clase = await boton_hora.get_attribute('class') or ''
                         
                         if not esta_disabled:
-                            # HORA DISPONIBLE! CLICKEAR!
+                            # HORA DISPONIBLE! RESERVAR!
                             await context.bot.send_message(
                                 chat_id=chat_id,
-                                text=f"HORA {hora_deseada} DISPONIBLE! Clickeando... (intento {intentos})"
+                                text=f"HORA {hora_deseada} ENCONTRADA! (intento {intentos})\nReservando..."
                             )
                             
+                            # Click en la hora
                             await boton_hora.click()
                             await page.wait_for_timeout(1000)
                             
-                            # Buscar y clickear "Ok, programar"
+                            # Click en "Ok, programar"
                             boton_programar = await page.query_selector('button:has-text("Ok, programar")')
                             
                             if boton_programar:
@@ -511,57 +525,79 @@ async def ejecutar_reserva_loop(rut_raw, rut_formateado, hora, chat_id, context,
                                         photo=ss_final,
                                         caption=f"RESERVA REALIZADA!\n\n"
                                                 f"Hora: {hora_deseada}\n"
-                                                f"RUT: {rut_formateado}\n\n"
-                                                f"Intento exitoso: {intentos}\n\n"
-                                                f"Revisa tu email de confirmacion"
+                                                f"RUT: {rut_formateado}\n"
+                                                f"Intento: {intentos}\n\n"
+                                                f"Revisa tu email"
                                     )
                                     
-                                    # Enviar texto de confirmacion
-                                    texto_conf = body_final[:1000]
                                     await context.bot.send_message(
                                         chat_id=chat_id,
-                                        text=f"Texto en pagina:\n{texto_conf}"
+                                        text=f"Pagina dice:\n{body_final[:1000]}"
                                     )
                                     
+                                    reserva_exitosa = True
                                     reserva_en_proceso[user_id] = False
                                     await browser.close()
                                     return
                                 else:
-                                    await context.bot.send_message(
-                                        chat_id=chat_id,
-                                        text="Boton 'Ok, programar' deshabilitado. Reintentando..."
-                                    )
+                                    # Boton programar disabled, deseleccionar y reintentar
+                                    await page.reload(timeout=15000)
+                                    await page.wait_for_load_state("networkidle", timeout=10000)
+                                    await page.wait_for_timeout(500)
+                                    
+                                    # Re-validar RUT si es necesario
+                                    rut_field = await page.query_selector('input[name="rut"]')
+                                    if rut_field:
+                                        await rut_field.click()
+                                        await rut_field.fill("")
+                                        await rut_field.type(rut_raw, delay=50)
+                                        await page.wait_for_timeout(300)
+                                        validar_btn = await page.query_selector('button:has-text("Validar")')
+                                        if validar_btn:
+                                            await validar_btn.click()
+                                            await page.wait_for_timeout(2000)
                             else:
-                                await context.bot.send_message(
-                                    chat_id=chat_id,
-                                    text="No encontre 'Ok, programar'. Reintentando..."
-                                )
-                        # Si esta disabled, continuar buscando
+                                # No encontro "Ok, programar", recargar
+                                await page.reload(timeout=15000)
+                                await page.wait_for_load_state("networkidle", timeout=10000)
+                                await page.wait_for_timeout(500)
+                                
+                                rut_field = await page.query_selector('input[name="rut"]')
+                                if rut_field:
+                                    await rut_field.click()
+                                    await rut_field.fill("")
+                                    await rut_field.type(rut_raw, delay=50)
+                                    await page.wait_for_timeout(300)
+                                    validar_btn = await page.query_selector('button:has-text("Validar")')
+                                    if validar_btn:
+                                        await validar_btn.click()
+                                        await page.wait_for_timeout(2000)
+                    else:
+                        # No encontro la hora, recargar pagina
+                        await page.reload(timeout=15000)
+                        await page.wait_for_load_state("networkidle", timeout=10000)
+                        await page.wait_for_timeout(500)
+                        
+                        # Re-validar RUT si aparece el campo
+                        rut_field = await page.query_selector('input[name="rut"]')
+                        if rut_field:
+                            await rut_field.click()
+                            await rut_field.fill("")
+                            await rut_field.type(rut_raw, delay=50)
+                            await page.wait_for_timeout(300)
+                            validar_btn = await page.query_selector('button:has-text("Validar")')
+                            if validar_btn:
+                                await validar_btn.click()
+                                await page.wait_for_timeout(2000)
                     
-                    # Refrescar pagina
-                    await page.reload(timeout=15000)
-                    await page.wait_for_load_state("networkidle", timeout=10000)
-                    await page.wait_for_timeout(500)
-                    
-                    # Re-validar RUT si aparece el campo
-                    rut_field = await page.query_selector('input[name="rut"]')
-                    if rut_field:
-                        await rut_field.click()
-                        await rut_field.fill("")
-                        await rut_field.type(rut_raw, delay=50)
-                        await page.wait_for_timeout(300)
-                        validar_btn = await page.query_selector('button:has-text("Validar")')
-                        if validar_btn:
-                            await validar_btn.click()
-                            await page.wait_for_timeout(2000)
-                    
-                    # Notificar progreso cada 30 intentos
+                    # Notificar progreso cada 30 intentos (cada minuto)
                     if intentos % 30 == 0:
-                        ss_progreso = await page.screenshot()
+                        now = datetime.datetime.now()
+                        ss_prog = await page.screenshot()
                         await context.bot.send_photo(
                             chat_id=chat_id,
-                            photo=ss_progreso,
-                            caption=f"Intento {intentos} - Buscando {hora_deseada}..."
+                            photo=ss_prog,
+                            caption=f"Intento {intentos} | {now.strftime('%H:%M:%S')} | Buscando {hora_deseada}..."
                         )
                     
                     await asyncio.sleep(2)
@@ -570,8 +606,26 @@ async def ejecutar_reserva_loop(rut_raw, rut_formateado, hora, chat_id, context,
                     if intentos % 15 == 0:
                         await context.bot.send_message(
                             chat_id=chat_id,
-                            text=f"Error temporal ({intentos}): {str(e)[:100]}\nContinuando..."
+                            text=f"Error temporal ({intentos}): {str(e)[:100]}\nRecargando..."
                         )
+                    
+                    # Intentar recargar en caso de error
+                    try:
+                        await page.goto("https://reservadehoras.lascondes.cl/#/agenda/28/agendar", timeout=30000)
+                        await page.wait_for_load_state("networkidle", timeout=15000)
+                        
+                        rut_input = await page.query_selector('input[name="rut"]')
+                        if rut_input:
+                            await rut_input.click()
+                            await rut_input.type(rut_raw, delay=50)
+                            await page.wait_for_timeout(300)
+                            validar_btn = await page.query_selector('button:has-text("Validar")')
+                            if validar_btn:
+                                await validar_btn.click()
+                                await page.wait_for_timeout(2000)
+                    except:
+                        pass
+                    
                     await asyncio.sleep(3)
             
             await browser.close()
@@ -584,14 +638,23 @@ async def ejecutar_reserva_loop(rut_raw, rut_formateado, hora, chat_id, context,
     
     reserva_en_proceso[user_id] = False
     
-    if datetime.datetime.now() >= fin_ventana:
+    if not reserva_exitosa and datetime.datetime.now() >= fin_ventana:
         await context.bot.send_message(
             chat_id=chat_id,
-            text=f"Ventana cerrada. Intentos: {intentos}\nReprogramando para manana..."
+            text=f"Ventana 17:55-18:10 cerrada\n"
+                 f"Intentos realizados: {intentos}\n"
+                 f"Hora {hora_deseada} no encontrada disponible\n\n"
+                 f"Reprogramando para manana..."
         )
         
+        # Reprogramar para manana
         ahora = datetime.datetime.now()
-        proxima = ahora.replace(hour=17, minute=55, second=0) + datetime.timedelta(days=1)
+        proxima = ahora.replace(hour=17, minute=55, second=0, microsecond=0) + datetime.timedelta(days=1)
+        
+        # Saltar domingo
+        if proxima.weekday() == 6:
+            proxima += datetime.timedelta(days=1)
+        
         segundos = (proxima - ahora).total_seconds()
         
         context.job_queue.run_once(
@@ -599,6 +662,11 @@ async def ejecutar_reserva_loop(rut_raw, rut_formateado, hora, chat_id, context,
             when=segundos,
             data={'user_id': user_id, 'chat_id': chat_id},
             name=f'inicio_{user_id}'
+        )
+        
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text=f"Reprogramado: {proxima.strftime('%A %d/%m a las %H:%M')}"
         )
 
 async def detener(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -609,7 +677,7 @@ async def detener(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for job in jobs:
         job.schedule_removal()
     
-    await update.message.reply_text("Bot detenido")
+    await update.message.reply_text("Bot detenido. Usa /auto para reactivar.")
 
 def main():
     app = Application.builder().token(TOKEN).build()
@@ -631,6 +699,7 @@ def main():
     app.add_handler(conv_handler)
     
     print("Bot automatico iniciado")
+    print("Ventana: 17:55-18:10 | Cada 2 seg")
     print("Ctrl+C para detener")
     app.run_polling()
 
