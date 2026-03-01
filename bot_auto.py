@@ -1,5 +1,6 @@
 import asyncio
 import datetime
+import os
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes, ConversationHandler, MessageHandler, filters
 from playwright.async_api import async_playwright
@@ -8,7 +9,6 @@ import logging
 # ============================================
 # 🔧 CONFIGURACIÓN
 # ============================================
-TOKEN = import os
 TOKEN = os.environ.get('BOT_TOKEN')
 if not TOKEN:
     raise ValueError("BOT_TOKEN no configurado")
@@ -206,7 +206,7 @@ async def reservar_auto(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"1. Abrir navegador a las 17:50\n"
         f"2. Ingresar RUT\n"
         f"3. Buscar cancha disponible\n"
-        f"4. Refrescar cada 5 segundos\n"
+        f"4. Refrescar cada 2 segundos (ultra rápido)\n"
         f"5. Reservar apenas esté disponible\n\n"
         f"⚡ Te avisaré cuando reserve exitosamente\n\n"
         f"⚠️ NO APAGUES el bot hasta después de las 18:05",
@@ -296,15 +296,15 @@ async def ejecutar_reserva_loop(rut, cancha, hora, chat_id, context, user_id):
                 reserva_en_proceso[user_id] = False
                 break
             
-            # Avisar cada 20 intentos (aprox cada 1.5 minutos)
-            if intentos % 20 == 0:
+            # Avisar cada 30 intentos (aprox cada 1 minuto con intervalos de 2 seg)
+            if intentos % 30 == 0:
                 await context.bot.send_message(
                     chat_id=chat_id,
                     text=f"🔄 Intento {intentos} - Buscando disponibilidad...",
                     parse_mode='Markdown'
                 )
             
-            await asyncio.sleep(5)  # Esperar 5 segundos entre intentos
+            await asyncio.sleep(2)  # Esperar 2 segundos entre intentos (OPTIMIZADO)
             
         except Exception as e:
             if intentos % 10 == 0:
@@ -313,7 +313,7 @@ async def ejecutar_reserva_loop(rut, cancha, hora, chat_id, context, user_id):
                     text=f"⚠️ Error temporal: {str(e)}\nSiguiendo intentos...",
                     parse_mode='Markdown'
                 )
-            await asyncio.sleep(5)
+            await asyncio.sleep(2)
     
     reserva_en_proceso[user_id] = False
     
@@ -447,10 +447,9 @@ def main():
     
     print("🤖 Bot 100% automático iniciado")
     print("🎯 Reserva automática con Playwright")
+    print("⚡ Refresh cada 2 segundos (ultra rápido)")
     print("📱 Ctrl+C para detener")
     app.run_polling()
 
 if __name__ == "__main__":
-
     main()
-
