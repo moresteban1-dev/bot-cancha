@@ -12,7 +12,13 @@ import logging
 # ============================================
 TOKEN = os.environ.get('BOT_TOKEN')
 if not TOKEN:
-    raise ValueError("BOT_TOKEN no configurado en variables de entorno")
+    # Fallback para pruebas locales si tienes el token
+    # TOKEN = "TU_TOKEN_AQUI" 
+    pass
+
+if not TOKEN:
+    print("❌ ERROR: Variable BOT_TOKEN no encontrada.")
+    print("Por favor configúrala en Railway > Variables")
 # ============================================
 
 ESPERANDO_USUARIO, ESPERANDO_CANCHA, ESPERANDO_HORA = range(3)
@@ -25,449 +31,250 @@ logging.basicConfig(
     level=logging.INFO
 )
 
-# ============================================
-# INSTALACIÓN AUTOMÁTICA DE CHROMIUM
-# ============================================
+# Instalar Chromium si es necesario
 def install_chromium():
-    """Instala Chromium automáticamente si no existe"""
     import subprocess
-    logging.info("🔍 Verificando instalación de Chromium...")
     try:
-        subprocess.run(
-            [sys.executable, "-m", "playwright", "install", "chromium"],
-            check=True,
-            capture_output=True
-        )
-        subprocess.run(
-            [sys.executable, "-m", "playwright", "install-deps", "chromium"],
-            check=True,
-            capture_output=True
-        )
-        logging.info("✅ Chromium instalado correctamente")
-    except subprocess.CalledProcessError as e:
-        logging.warning(f"⚠️ Error instalando Chromium: {e}")
-    except Exception as e:
-        logging.warning(f"⚠️ Error inesperado: {e}")
-
-# ============================================
-# HANDLERS DE TELEGRAM
-# ============================================
+        subprocess.run([sys.executable, "-m", "playwright", "install", "chromium"], check=True)
+    except:
+        pass
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "🎾 *Bot Reserva Automática Las Condes*\n\n"
-        "🤖 Versión 100% AUTOMÁTICA con Playwright\n\n"
+        "🤖 Versión FINAL (Botón Validar)\n\n"
         "Comandos:\n"
         "/config - Configurar datos\n"
         "/auto - Activar reserva automática\n"
         "/test - Probar conexión ahora\n"
         "/detener - Detener bot\n"
-        "/status - Ver configuración\n\n"
-        "⚡ El bot reservará completamente solo\n"
-        "desde las 17:50 hasta las 18:05",
+        "/status - Ver configuración",
         parse_mode='Markdown'
     )
 
 async def config(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "🔧 *Configuración*\n\n"
-        "Envíame tu RUT (sin puntos ni guión)\n"
-        "Ejemplo: 12345678",
-        parse_mode='Markdown'
-    )
+    await update.message.reply_text("Envíame tu RUT (ej: 12345678):")
     return ESPERANDO_USUARIO
 
 async def guardar_usuario(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    if user_id not in user_data:
-        user_data[user_id] = {}
-    
+    if user_id not in user_data: user_data[user_id] = {}
     rut = update.message.text.strip().replace(".", "").replace("-", "")
     user_data[user_id]['rut'] = rut
-    
-    await update.message.reply_text(
-        "✅ RUT guardado\n\n"
-        "¿Qué cancha? (1-12):"
-    )
+    await update.message.reply_text("✅ RUT guardado. ¿Qué cancha? (1-12):")
     return ESPERANDO_CANCHA
 
 async def guardar_cancha(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    cancha = update.message.text.strip()
-    
-    if not cancha.isdigit() or int(cancha) < 1 or int(cancha) > 12:
-        await update.message.reply_text("❌ Cancha inválida. Entre 1 y 12:")
-        return ESPERANDO_CANCHA
-    
-    user_data[user_id]['cancha'] = int(cancha)
-    
-    await update.message.reply_text(
-        "✅ Cancha guardada\n\n"
-        "¿A qué hora quieres jugar? (6-23):"
-    )
+    user_data[user_id]['cancha'] = int(update.message.text.strip())
+    await update.message.reply_text("✅ Cancha guardada. ¿Hora? (6-23):")
     return ESPERANDO_HORA
 
 async def guardar_hora(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    hora = update.message.text.strip()
-    
-    if not hora.isdigit() or int(hora) < 6 or int(hora) > 23:
-        await update.message.reply_text("❌ Hora inválida. Entre 6 y 23:")
-        return ESPERANDO_HORA
-    
-    user_data[user_id]['hora'] = int(hora)
+    user_data[user_id]['hora'] = int(update.message.text.strip())
     config = user_data[user_id]
-    
     await update.message.reply_text(
-        f"✅ *Configuración completada*\n\n"
-        f"👤 RUT: {config['rut']}\n"
-        f"🎾 Cancha: {config['cancha']}\n"
-        f"⏰ Hora: {config['hora']}:00\n\n"
-        f"Usa /auto para activar reserva automática\n"
-        f"O /test para probar ahora mismo",
+        f"✅ *Listo*\nRUT: {config['rut']}\nCancha: {config['cancha']}\nHora: {config['hora']}:00\n\nUsa /test para probar.",
         parse_mode='Markdown'
     )
     return ConversationHandler.END
 
 async def cancelar(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("❌ Cancelado")
+    await update.message.reply_text("Cancelado.")
     return ConversationHandler.END
 
 async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    
-    if user_id not in user_data or not user_data[user_id]:
-        await update.message.reply_text("⚠️ Sin configuración. Usa /config")
+    if user_id not in user_data:
+        await update.message.reply_text("No configurado.")
         return
-    
-    config = user_data[user_id]
-    ahora = datetime.datetime.now()
-    
-    if ahora.hour >= 18 and ahora.minute > 5:
-        proxima = ahora.replace(hour=17, minute=50, second=0) + datetime.timedelta(days=1)
-        dia_reserva = ahora + datetime.timedelta(days=2)
-    else:
-        proxima = ahora.replace(hour=17, minute=50, second=0)
-        if ahora.hour >= 18:
-            proxima += datetime.timedelta(days=1)
-            dia_reserva = ahora + datetime.timedelta(days=2)
-        else:
-            dia_reserva = ahora + datetime.timedelta(days=1)
-    
-    estado = "🟢 ACTIVO" if reserva_en_proceso.get(user_id, False) else "⚪ Inactivo"
-    
+    c = user_data[user_id]
     await update.message.reply_text(
-        f"📋 *Configuración actual*\n\n"
-        f"👤 RUT: {config.get('rut')}\n"
-        f"🎾 Cancha: {config.get('cancha')}\n"
-        f"⏰ Hora: {config.get('hora')}:00\n\n"
-        f"📅 Próxima ventana: {proxima.strftime('%d/%m 17:50-18:05')}\n"
-        f"🎯 Para jugar: {dia_reserva.strftime('%A %d/%m')}\n\n"
-        f"Estado: {estado}",
-        parse_mode='Markdown'
+        f"📋 RUT: {c.get('rut')}\nCancha: {c.get('cancha')}\nHora: {c.get('hora')}:00"
     )
 
 async def test_reserva(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    
-    if user_id not in user_data or not user_data[user_id].get('rut'):
-        await update.message.reply_text("⚠️ Usa /config primero")
+    if user_id not in user_data:
+        await update.message.reply_text("Usa /config primero")
         return
     
-    await update.message.reply_text(
-        "🧪 *Modo TEST activado*\n\n"
-        "Probando conexión y login...\n"
-        "Esto puede tardar 10-15 segundos",
-        parse_mode='Markdown'
-    )
-    
+    await update.message.reply_text("🧪 Probando 'Validar'...")
     config = user_data[user_id]
     
     try:
-        resultado = await intentar_reserva(
-            config['rut'],
-            config['cancha'],
-            config['hora'],
-            update.effective_chat.id,
-            context,
-            modo_test=True
-        )
-        await update.message.reply_text(resultado, parse_mode='Markdown')
+        res = await intentar_reserva(config['rut'], config['cancha'], config['hora'], update.effective_chat.id, context, modo_test=True)
+        await update.message.reply_text(res, parse_mode='Markdown')
     except Exception as e:
-        await update.message.reply_text(
-            f"❌ Error en test:\n{str(e)}\n\n"
-            f"Verifica que el RUT sea correcto",
-            parse_mode='Markdown'
-        )
+        await update.message.reply_text(f"❌ Error: {str(e)}")
 
 async def reservar_auto(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    
-    if user_id not in user_data or not user_data[user_id].get('rut'):
-        await update.message.reply_text("⚠️ Usa /config primero")
+    if user_id not in user_data:
+        await update.message.reply_text("Usa /config primero")
         return
-    
+
     ahora = datetime.datetime.now()
     
+    # Lógica de horario (17:50)
     if ahora.hour >= 18 and ahora.minute > 5:
         inicio = ahora.replace(hour=17, minute=50, second=0) + datetime.timedelta(days=1)
-        dia_reserva = ahora + datetime.timedelta(days=2)
     elif ahora.hour == 17 and ahora.minute >= 50:
         await iniciar_reserva_inmediata(update, context)
         return
     else:
         inicio = ahora.replace(hour=17, minute=50, second=0)
-        dia_reserva = ahora + datetime.timedelta(days=1)
+
+    secs = (inicio - ahora).total_seconds()
     
-    segundos_hasta = (inicio - ahora).total_seconds()
-    horas = int(segundos_hasta // 3600)
-    minutos = int((segundos_hasta % 3600) // 60)
-    
-    await update.message.reply_text(
-        f"🤖 *Reserva automática programada*\n\n"
-        f"⏰ Iniciará: {inicio.strftime('%d/%m a las 17:50:00')}\n"
-        f"📅 Reservará para: {dia_reserva.strftime('%A %d/%m')}\n"
-        f"⏳ Tiempo restante: {horas}h {minutos}m\n\n"
-        f"🔄 *El bot hará automáticamente:*\n"
-        f"1. Abrir navegador a las 17:50\n"
-        f"2. Ingresar RUT\n"
-        f"3. Buscar cancha disponible\n"
-        f"4. Refrescar cada 2 segundos\n"
-        f"5. Reservar apenas esté disponible\n\n"
-        f"⚡ Te avisaré cuando reserve exitosamente",
-        parse_mode='Markdown'
-    )
-    
-    context.job_queue.run_once(
-        callback_iniciar_reserva,
-        when=segundos_hasta,
-        data={'user_id': user_id, 'chat_id': update.effective_chat.id},
-        name=f'inicio_{user_id}'
-    )
+    await update.message.reply_text(f"⏰ Programado para las 17:50 ({int(secs//60)} min).")
+    context.job_queue.run_once(callback_iniciar_reserva, when=secs, data={'user_id': user_id, 'chat_id': update.effective_chat.id}, name=f'inicio_{user_id}')
 
 async def iniciar_reserva_inmediata(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    chat_id = update.effective_chat.id
-    
-    await update.message.reply_text(
-        "🔴 *¡INICIANDO RESERVA AUTOMÁTICA AHORA!*\n\n"
-        "El navegador se está abriendo...",
-        parse_mode='Markdown'
-    )
-    
-    config = user_data[user_id]
-    
-    asyncio.create_task(
-        ejecutar_reserva_loop(
-            config['rut'],
-            config['cancha'],
-            config['hora'],
-            chat_id,
-            context,
-            user_id
-        )
-    )
+    config = user_data[update.effective_user.id]
+    await update.message.reply_text("🔴 Iniciando...")
+    asyncio.create_task(ejecutar_reserva_loop(config['rut'], config['cancha'], config['hora'], update.effective_chat.id, context, update.effective_user.id))
 
 async def callback_iniciar_reserva(context: ContextTypes.DEFAULT_TYPE):
     data = context.job.data
-    user_id = data['user_id']
-    chat_id = data['chat_id']
-    
-    await context.bot.send_message(
-        chat_id=chat_id,
-        text="🔴 *¡RESERVA AUTOMÁTICA INICIADA!*\n\n"
-             "Abriendo navegador...\n"
-             "Te mantendré informado",
-        parse_mode='Markdown'
-    )
-    
-    config = user_data[user_id]
-    
-    asyncio.create_task(
-        ejecutar_reserva_loop(
-            config['rut'],
-            config['cancha'],
-            config['hora'],
-            chat_id,
-            context,
-            user_id
-        )
-    )
+    config = user_data[data['user_id']]
+    await context.bot.send_message(data['chat_id'], "🔴 Iniciando automátic...")
+    asyncio.create_task(ejecutar_reserva_loop(config['rut'], config['cancha'], config['hora'], data['chat_id'], context, data['user_id']))
 
 async def ejecutar_reserva_loop(rut, cancha, hora, chat_id, context, user_id):
     reserva_en_proceso[user_id] = True
-    
     ahora = datetime.datetime.now()
-    fin_ventana = ahora.replace(hour=18, minute=5, second=0, microsecond=0)
-    if fin_ventana < ahora:
-        fin_ventana += datetime.timedelta(days=1)
+    fin = ahora.replace(hour=18, minute=5, second=0)
+    if fin < ahora: fin += datetime.timedelta(days=1)
     
     intentos = 0
-    
-    while datetime.datetime.now() < fin_ventana and reserva_en_proceso.get(user_id, False):
+    while datetime.datetime.now() < fin and reserva_en_proceso.get(user_id):
         intentos += 1
-        
         try:
-            resultado = await intentar_reserva(rut, cancha, hora, chat_id, context)
-            
-            if "RESERVADA" in resultado:
-                await context.bot.send_message(
-                    chat_id=chat_id,
-                    text=resultado,
-                    parse_mode='Markdown'
-                )
-                reserva_en_proceso[user_id] = False
+            res = await intentar_reserva(rut, cancha, hora, chat_id, context)
+            if "RESERVADA" in res:
+                await context.bot.send_message(chat_id, res)
                 break
-            
             if intentos % 30 == 0:
-                await context.bot.send_message(
-                    chat_id=chat_id,
-                    text=f"🔄 Intento {intentos} - Buscando disponibilidad...",
-                    parse_mode='Markdown'
-                )
-            
+                await context.bot.send_message(chat_id, f"🔄 Intento {intentos}...")
             await asyncio.sleep(2)
-            
-        except Exception as e:
-            if intentos % 10 == 0:
-                await context.bot.send_message(
-                    chat_id=chat_id,
-                    text=f"⚠️ Error temporal: {str(e)}\nSiguiendo intentos...",
-                    parse_mode='Markdown'
-                )
+        except:
             await asyncio.sleep(2)
     
     reserva_en_proceso[user_id] = False
-    
-    if datetime.datetime.now() >= fin_ventana:
-        await context.bot.send_message(
-            chat_id=chat_id,
-            text=f"⏸️ Ventana 17:50-18:05 cerrada\n\n"
-                 f"Total intentos: {intentos}\n"
-                 f"No se encontró disponibilidad\n\n"
-                 f"Se reprogramará para mañana automáticamente",
-            parse_mode='Markdown'
-        )
-        
-        ahora = datetime.datetime.now()
-        proxima = ahora.replace(hour=17, minute=50, second=0) + datetime.timedelta(days=1)
-        segundos = (proxima - ahora).total_seconds()
-        
-        context.job_queue.run_once(
-            callback_iniciar_reserva,
-            when=segundos,
-            data={'user_id': user_id, 'chat_id': chat_id},
-            name=f'inicio_{user_id}'
-        )
 
 async def intentar_reserva(rut, cancha, hora, chat_id, context, modo_test=False):
     async with async_playwright() as p:
         browser = await p.chromium.launch(
             headless=True,
-            args=[
-                '--disable-blink-features=AutomationControlled',
-                '--no-sandbox',
-                '--disable-setuid-sandbox',
-                '--disable-dev-shm-usage'
-            ]
+            args=['--disable-blink-features=AutomationControlled', '--no-sandbox']
         )
-        
         context_browser = await browser.new_context(
-            viewport={"width": 1366, "height": 768},
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+            viewport={"width": 1280, "height": 720},
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
         )
-        
         page = await context_browser.new_page()
         
         try:
-            await page.goto("https://reservadehoras.lascondes.cl/#/agenda/28/agendar", timeout=30000)
-            await page.wait_for_load_state("networkidle", timeout=15000)
+            logging.info("Navegando...")
+            await page.goto("https://reservadehoras.lascondes.cl/#/agenda/28/agendar", timeout=60000)
             
-            await page.wait_for_selector('input[name="rut"], input#rut, input[placeholder*="RUT"]', timeout=10000)
-            await page.fill('input[name="rut"], input#rut, input[placeholder*="RUT"]', rut)
+            # 1. Esperar campo RUT
+            logging.info("Buscando RUT...")
+            await page.wait_for_selector('input[name="rut"]', state='visible', timeout=20000)
             
-            await page.click('button[type="submit"], button:has-text("Ingresar"), button:has-text("Continuar")')
+            # 2. Llenar RUT
+            await page.fill('input[name="rut"]', rut)
+            
+            # 3. CLICK EN "VALIDAR" (La clave de todo)
+            logging.info("Buscando botón Validar...")
+            
+            # Probamos varios selectores para asegurar el click en "Validar"
+            boton_encontrado = False
+            
+            # Estrategia A: Texto exacto
+            if not boton_encontrado:
+                try:
+                    await page.click('text="Validar"', timeout=3000)
+                    boton_encontrado = True
+                except: pass
+
+            # Estrategia B: Botón que contiene texto
+            if not boton_encontrado:
+                try:
+                    await page.click('button:has-text("Validar")', timeout=3000)
+                    boton_encontrado = True
+                except: pass
+                
+            # Estrategia C: Enter en el input (a veces activa el form)
+            if not boton_encontrado:
+                await page.press('input[name="rut"]', 'Enter')
+                boton_encontrado = True
+
+            if modo_test:
+                await page.wait_for_timeout(3000)
+                # Verificar si pasó
+                if await page.query_selector('text=Validar') and not await page.query_selector('.hora-disponible'):
+                     msg = "⚠️ Botón clickeado, pero parece que seguimos en el login. Verifica RUT."
+                else:
+                     msg = "✅ **TEST EXITOSO**\n\nBotón 'Validar' presionado correctamente.\nLogin superado."
+                
+                await browser.close()
+                return msg
+
+            # === FASE DE RESERVA ===
+            
+            # Esperar a que carguen las horas (puede tardar un poco tras validar)
             await page.wait_for_timeout(2000)
             
-            if modo_test:
-                await browser.close()
-                return (
-                    "✅ *Test exitoso*\n\n"
-                    "✓ Conexión OK\n"
-                    "✓ Login OK\n"
-                    "✓ El bot está funcionando correctamente\n\n"
-                    "Usa /auto para activar reserva automática"
-                )
-            
-            fecha_objetivo = datetime.datetime.now() + datetime.timedelta(days=1)
-            fecha_str = fecha_objetivo.strftime("%Y-%m-%d")
-            
-            selector_hora = f'button.hora-disponible[data-hora="{hora}:00"], button:has-text("{hora}:00"):not([disabled])'
-            
-            hora_elemento = await page.query_selector(selector_hora)
-            
-            if hora_elemento:
-                await hora_elemento.click()
+            # Buscar hora específica
+            try:
+                # Selector genérico para cualquier botón que tenga la hora (ej: "19:00")
+                await page.click(f'button:has-text("{hora}:00")', timeout=2000)
+                
+                # Confirmar
                 await page.wait_for_timeout(500)
-                
-                await page.click('button:has-text("Reservar"), button:has-text("Confirmar")')
-                await page.wait_for_timeout(1000)
+                await page.click('button:has-text("Confirmar"), button:has-text("Reservar")', timeout=5000)
                 
                 await browser.close()
-                
-                return (
-                    f"🎉🎉🎉 *¡CANCHA RESERVADA!* 🎉🎉🎉\n\n"
-                    f"📅 Fecha: {fecha_objetivo.strftime('%A %d/%m/%Y')}\n"
-                    f"🎾 Cancha: {cancha}\n"
-                    f"⏰ Hora: {hora}:00\n"
-                    f"👤 RUT: {rut}\n\n"
-                    f"✅ Revisa tu email de confirmación"
-                )
-            
-            await browser.close()
-            return "NO_DISPONIBLE"
-            
+                return f"🎉🎉🎉 **CANCHA RESERVADA** 🎉🎉🎉\n\nCancha: {cancha}\nHora: {hora}:00"
+            except:
+                await browser.close()
+                return "NO_DISPONIBLE"
+
         except Exception as e:
             await browser.close()
             raise e
 
 async def detener(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    reserva_en_proceso[user_id] = False
-    
-    jobs = context.job_queue.get_jobs_by_name(f'inicio_{user_id}')
-    for job in jobs:
-        job.schedule_removal()
-    
-    await update.message.reply_text("⏸️ Bot detenido")
+    reserva_en_proceso[update.effective_user.id] = False
+    await update.message.reply_text("Detenido.")
 
 def main():
-    # Instalar Chromium al iniciar
-    logging.info("🚀 Iniciando bot...")
     install_chromium()
-    
+    if not TOKEN: return
     app = Application.builder().token(TOKEN).build()
-    
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("config", config))
     app.add_handler(CommandHandler("status", status))
     app.add_handler(CommandHandler("test", test_reserva))
     app.add_handler(CommandHandler("auto", reservar_auto))
     app.add_handler(CommandHandler("detener", detener))
     
-    conv_handler = ConversationHandler(
+    # Conversación
+    conv = ConversationHandler(
         entry_points=[CommandHandler("config", config)],
         states={
-            ESPERANDO_USUARIO: [MessageHandler(filters.TEXT & ~filters.COMMAND, guardar_usuario)],
-            ESPERANDO_CANCHA: [MessageHandler(filters.TEXT & ~filters.COMMAND, guardar_cancha)],
-            ESPERANDO_HORA: [MessageHandler(filters.TEXT & ~filters.COMMAND, guardar_hora)],
+            ESPERANDO_USUARIO: [MessageHandler(filters.TEXT, guardar_usuario)],
+            ESPERANDO_CANCHA: [MessageHandler(filters.TEXT, guardar_cancha)],
+            ESPERANDO_HORA: [MessageHandler(filters.TEXT, guardar_hora)],
         },
         fallbacks=[CommandHandler("cancelar", cancelar)]
     )
-    app.add_handler(conv_handler)
+    app.add_handler(conv)
     
-    logging.info("🤖 Bot 100% automático iniciado")
-    logging.info("🎯 Reserva automática con Playwright")
-    logging.info("⚡ Refresh cada 2 segundos")
+    print("Bot iniciado...")
     app.run_polling()
 
 if __name__ == "__main__":
