@@ -8,7 +8,7 @@ import logging
 # ============================================
 # 🔧 CONFIGURACIÓN
 # ============================================
-TOKEN = "7644877769:AAGMjb6X2CaF44H-a3wJT_IPn1qVwFXWlkM"
+TOKEN = "TU TOKEN"
 # ============================================
 
 ESPERANDO_USUARIO, ESPERANDO_CANCHA, ESPERANDO_HORA = range(3)
@@ -448,4 +448,5 @@ def main():
     app.run_polling()
 
 if __name__ == "__main__":
+
     main()
