@@ -8,7 +8,10 @@ import logging
 # ============================================
 # 🔧 CONFIGURACIÓN
 # ============================================
-TOKEN = "TU TOKEN"
+TOKEN = import os
+TOKEN = os.environ.get('BOT_TOKEN')
+if not TOKEN:
+    raise ValueError("BOT_TOKEN no configurado")
 # ============================================
 
 ESPERANDO_USUARIO, ESPERANDO_CANCHA, ESPERANDO_HORA = range(3)
@@ -450,3 +453,4 @@ def main():
 if __name__ == "__main__":
 
     main()
+
