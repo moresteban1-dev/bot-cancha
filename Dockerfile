@@ -40,12 +40,10 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Instalar solo Chromium (sin --with-deps que está roto en Trixie)
+# Instalar solo Chromium
 RUN mkdir -p /ms-playwright && \
     PLAYWRIGHT_BROWSERS_PATH=/ms-playwright playwright install chromium
 
 COPY . .
 
 CMD ["python", "bot_auto.py"]
-
-fix: Dockerfile compatible con Railway + Debian Trixie 2026
