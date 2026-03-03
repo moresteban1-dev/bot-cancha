@@ -1,4 +1,3 @@
-
 """
 Bot Reserva Doble — Canchas Las Condes
 v3.0 Final · Arquitectura: Telegram + Playwright (2 browsers paralelos)
@@ -749,3 +748,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
