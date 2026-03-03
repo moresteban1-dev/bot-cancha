@@ -1,13 +1,12 @@
-# ======== DOCKERFILE FUNCIONAL 2025-2026 ========
+# DOCKERFILE 100% FUNCIONAL RAILWAY MARZO 2026
 FROM python:3.11-slim-bookworm
 
-# Variables de entorno
 ENV TZ=America/Santiago \
     DEBIAN_FRONTEND=noninteractive \
     PYTHONUNBUFFERED=1 \
     PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
 
-# Actualizar e instalar dependencias mínimas + fix fonts
+# Instalar dependencias del sistema que Playwright necesita
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         ca-certificates \
@@ -34,30 +33,19 @@ RUN apt-get update && \
         fonts-noto-color-emoji \
         libu2f-udev \
         libvulkan1 && \
-    # Fix fonts que antes rompían todo
-    fc-cache -fv && \
     rm -rf /var/lib/apt/lists/*
 
-# Crear usuario no-root (recomendado)
-RUN useradd -m pwuser
-
-# Workdir
 WORKDIR /app
 
-# Copiar requirements
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Instalar Playwright + Chromium (SIN --with-deps que está roto en Trixie)
-RUN playwright install chromium --with-deps || \
-    (echo "Fallback: instalando solo chromium sin deps del sistema" && \
-     mkdir -p /ms-playwright && \
-     PLAYWRIGHT_BROWSERS_PATH=/ms-playwright playwright install chromium)
+# Instalar solo Chromium (sin --with-deps que está roto en Trixie)
+RUN mkdir -p /ms-playwright && \
+    PLAYWRIGHT_BROWSERS_PATH=/ms-playwright playwright install chromium
 
-# Copiar código
 COPY . .
 
-# Cambiar a usuario no-root
-USER pwuser
-
 CMD ["python", "bot_auto.py"]
+
+fix: Dockerfile compatible con Railway + Debian Trixie 2026
