@@ -1,19 +1,17 @@
 FROM python:3.11-slim
 
+ENV TZ=America/Santiago
+ENV DEBIAN_FRONTEND=noninteractive
+ENV PYTHONUNBUFFERED=1
+
 WORKDIR /app
 
-RUN apt-get update && apt-get install -y \
-    wget \
-    gnupg \
-    ca-certificates \
-    && rm -rf /var/lib/apt/lists/*
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
 
-RUN pip install --upgrade pip
-RUN pip install python-telegram-bot==20.7 playwright aiohttp
+# Instalar Chromium + dependencias del sistema
+RUN playwright install --with-deps chromium
 
 COPY . .
-
-RUN playwright install chromium
-RUN playwright install-deps chromium
 
 CMD ["python", "bot_auto.py"]
