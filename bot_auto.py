@@ -1,9 +1,9 @@
 """
 Bot Reserva Doble — Canchas Las Condes
-v4.6 · Marzo 2026
-- Fix: cfg_h1 crash silencioso al ingresar hora
-- Fix: manejo de errores robusto en todos los handlers
-- Nuevo: /reset para limpiar conversación trabada
+v4.7 · Marzo 2026
+- Fix CRÍTICO: campo celular es name="patientPhone" type="text"
+- Fix CRÍTICO: botones de hora tienen ícono dentro (texto parcial)
+- Fix: selector de botón hora usa .text-content() en lugar de inner_text exacto
 """
 
 import asyncio
@@ -38,10 +38,8 @@ if not TOKEN:
 
 URL = "https://reservadehoras.lascondes.cl/#/agenda/28/agendar"
 
-# Zona horaria — usar datetime simple para evitar crashes con ZoneInfo en Railway
 def ahora():
-    # Chile es UTC-3 (verano) o UTC-4 (invierno)
-    # Usamos UTC-3 como base (horario de verano Chile)
+    # Chile verano = UTC-3
     return datetime.datetime.utcnow() - datetime.timedelta(hours=3)
 
 (
@@ -77,36 +75,17 @@ def fmt(rut: str) -> str:
     return f"{rut[:-1]}-{rut[-1]}"
 
 def parsear_hora(texto: str):
-    """
-    Acepta cualquier formato:
-      9, 09, 9:00, 09:00, 9:00 hrs, etc.
-    Retorna int (ej: 9) o None si inválido.
-    """
+    """Acepta: 9, 09, 9:00, 09:00, 9:00 hrs, etc."""
     try:
-        # Limpiar: quitar espacios, "hrs", ":00", etc.
         limpio = texto.strip().lower()
         limpio = limpio.replace("hrs", "").replace(":", "").replace(" ", "")
-        # Si quedó algo como "900" → tomar solo las primeras cifras hasta las 2 primeras
         if len(limpio) > 2:
             limpio = limpio[:2]
         h = int(limpio)
-        if 6 <= h <= 23:
-            return h
-        return None
+        return h if 6 <= h <= 23 else None
     except Exception as e:
         logger.error(f"parsear_hora error: {e} — texto='{texto}'")
         return None
-
-def formatos_hora(hora_int: int) -> list:
-    f1 = f"{hora_int}:00"
-    f2 = f"{hora_int:02d}:00"
-    res = [f1]
-    if f2 != f1:
-        res.append(f2)
-    res.append(f"{f1} hrs")
-    if f2 != f1:
-        res.append(f"{f2} hrs")
-    return res
 
 def sleep_dinamico() -> float:
     h = ahora()
@@ -140,37 +119,64 @@ async def _click_validar(page) -> bool:
     return False
 
 async def _buscar_boton_hora(page, hora_int: int, ganadas: set):
-    formatos = formatos_hora(hora_int)
-    if all(f in ganadas for f in formatos):
+    """
+    Los botones de hora contienen un ícono ⓘ además del texto.
+    Ejemplo real en el DOM: <button>9:00<i ...>ⓘ</i></button>
+    Por eso usamos text-content parcial en lugar de match exacto.
+    """
+    if hora_int in ganadas:
         return None, None
+
+    # Formatos posibles que puede mostrar el sitio
+    prefijos = [f"{hora_int}:00", f"{hora_int:02d}:00"]
+
     botones = await page.query_selector_all("button")
     for btn in botones:
         try:
+            # inner_text() incluye texto visible (sin tags HTML internos)
             texto = (await btn.inner_text()).strip()
-            if texto not in formatos:
+
+            # Verificar que empiece con la hora buscada
+            coincide = any(texto.startswith(p) for p in prefijos)
+            if not coincide:
                 continue
-            if texto in ganadas:
+
+            if hora_int in ganadas:
                 continue
+
+            # Verificar que no esté deshabilitado
             if await btn.get_attribute("disabled") is not None:
                 continue
+
             clase = (await btn.get_attribute("class") or "").lower()
             if "disabled" in clase or "unavailable" in clase:
                 continue
-            return btn, texto
+
+            # Verificar que sea clickeable (visible y habilitado)
+            if not await btn.is_visible():
+                continue
+
+            return btn, f"{hora_int}:00"
+
         except:
             continue
     return None, None
 
 async def _listar_horas_visibles(page) -> list:
+    """Lista todas las horas disponibles/no disponibles en la pantalla."""
     horas = []
     botones = await page.query_selector_all("button")
     for btn in botones:
         try:
             texto = (await btn.inner_text()).strip()
-            if ":00" in texto and len(texto) <= 12:
-                disabled = await btn.get_attribute("disabled")
-                est = "SOLD OUT" if disabled is not None else "AVAILABLE"
-                horas.append(f"{est} {texto}")
+            # Detectar botones de hora (contienen ":00")
+            if ":00" not in texto:
+                continue
+            if len(texto) > 15:  # evitar botones largos que no son horas
+                continue
+            disabled = await btn.get_attribute("disabled")
+            est = "OCUPADA" if disabled is not None else "LIBRE"
+            horas.append(f"{est}: {texto[:8]}")
         except:
             continue
     return horas
@@ -186,19 +192,29 @@ async def _click_boton(page, textos: list) -> bool:
 
 # ═══════════════════════════════════════════════════════════════
 # PANTALLA 3 — Confirmación de datos personales
-# Campo Celular SIEMPRE vacío → rellenar obligatoriamente
+# CAMPO REAL (del inspector HTML): name="patientPhone" type="text"
 # ═══════════════════════════════════════════════════════════════
 
 async def _completar_pantalla3(page, tel: str, msg_fn) -> bool:
-    # 1. Esperar Pantalla 3
+    """
+    Pantalla 3 real del sitio:
+      - Nombre (readonly): PABLO
+      - Apellido (readonly): COSTA
+      - Correo (readonly): placeholder "Correo"
+      - Celular (EDITABLE): name="patientPhone" placeholder="Celular" type="text"
+      - Botón: "Aceptar y finalizar"
+    """
+
+    # 1. Esperar que cargue la Pantalla 3
     await msg_fn("⏳ Esperando Pantalla 3...")
     pantalla3_ok = False
-    for _ in range(15):
+    for _ in range(15):  # hasta 7.5 segundos
         try:
             body = await page.inner_text("body")
             if any(kw in body for kw in [
                 "Confirmación de datos personales",
                 "Aceptar y finalizar",
+                "patientPhone",
                 "Celular",
             ]):
                 pantalla3_ok = True
@@ -208,66 +224,89 @@ async def _completar_pantalla3(page, tel: str, msg_fn) -> bool:
         await page.wait_for_timeout(500)
 
     if not pantalla3_ok:
-        await msg_fn("❌ Pantalla 3 no apareció (timeout)")
+        await msg_fn("❌ Pantalla 3 no apareció (timeout 7.5s)")
         return False
 
-    await msg_fn("📋 Pantalla 3 OK — rellenando celular...")
+    await msg_fn("📋 Pantalla 3 cargada — buscando campo celular...")
 
-    # 2. Rellenar campo Celular (siempre vacío)
+    # 2. Buscar campo Celular
+    # SELECTOR EXACTO según el HTML inspeccionado:
+    # <input placeholder="Celular" name="patientPhone" type="text">
     SELECTORES_CEL = [
+        'input[name="patientPhone"]',       # ← EXACTO del inspector HTML
+        'input[placeholder="Celular"]',     # ← por placeholder exacto
+        'input[placeholder*="Celular"]',    # ← parcial
+        'input[placeholder*="elular"]',     # ← sin mayúscula
         'input[name="celular"]',
         'input[name="cel"]',
         'input[name="fono"]',
         'input[name="telefono"]',
         'input[name="phone"]',
         'input[type="tel"]',
-        'input[placeholder*="Celular"]',
-        'input[placeholder*="celular"]',
-        'input[placeholder*="Teléfono"]',
-        'input[placeholder*="9"]',
     ]
 
     campo_cel = None
+    selector_usado = None
     for sel in SELECTORES_CEL:
         campo = await page.query_selector(sel)
         if campo and await campo.is_visible():
             campo_cel = campo
+            selector_usado = sel
             break
 
-    # Fallback: recorrer todos los inputs visibles
+    # Fallback: buscar input editable que no sea nombre/apellido/correo
     if not campo_cel:
+        await msg_fn("⚠️ Selector directo falló — buscando por fallback...")
         inputs = await page.query_selector_all("input")
         for inp in inputs:
             try:
                 if not await inp.is_visible():
                     continue
-                tp = (await inp.get_attribute("type")        or "").lower()
-                ph = (await inp.get_attribute("placeholder") or "").lower()
-                nm = (await inp.get_attribute("name")        or "").lower()
-                if tp in ["tel", "number"] or any(
-                    k in ph or k in nm
-                    for k in ["cel", "tel", "fono", "phone"]
-                ):
+                ph  = (await inp.get_attribute("placeholder") or "").lower()
+                nm  = (await inp.get_attribute("name")        or "").lower()
+                ro  = await inp.get_attribute("readonly")
+                dis = await inp.get_attribute("disabled")
+                # Buscar el que tenga placeholder "celular" o name con "phone"
+                # y no sea readonly ni disabled
+                if ro is not None or dis is not None:
+                    continue
+                if "celular" in ph or "phone" in nm or "fono" in nm or "tel" in nm:
                     campo_cel = inp
+                    selector_usado = f"fallback: ph={ph}, nm={nm}"
                     break
             except:
                 continue
 
     if not campo_cel:
-        await msg_fn("❌ Campo Celular no encontrado")
+        await msg_fn("❌ Campo celular no encontrado — tomando screenshot para debug")
         return False
 
+    await msg_fn(f"✅ Campo celular encontrado: {selector_usado}")
+
+    # 3. Rellenar campo Celular
     try:
         await campo_cel.click()
-        await campo_cel.fill("")
-        await campo_cel.type(tel, delay=50)
+        await page.wait_for_timeout(200)
+        await campo_cel.fill("")                    # limpiar
+        await campo_cel.type(tel, delay=50)         # escribir natural
         await page.wait_for_timeout(400)
-        await msg_fn(f"📱 Celular ingresado: {tel}")
+
+        # Verificar que se escribió correctamente
+        valor = await campo_cel.input_value()
+        await msg_fn(f"📱 Celular ingresado: {valor}")
+
+        if valor != tel:
+            await msg_fn(f"⚠️ Valor esperado: {tel}, valor real: {valor} — reintentando")
+            await campo_cel.triple_click()
+            await campo_cel.fill(tel)
+            await page.wait_for_timeout(300)
+
     except Exception as e:
         await msg_fn(f"❌ Error al ingresar celular: {e}")
         return False
 
-    # 3. Click en "Aceptar y finalizar"
+    # 4. Click en "Aceptar y finalizar"
+    await page.wait_for_timeout(300)
     finalizar_ok = False
     for texto_btn in ["Aceptar y finalizar", "Aceptar", "Finalizar", "Confirmar"]:
         btn = await page.query_selector(f'button:has-text("{texto_btn}")')
@@ -288,9 +327,10 @@ async def _completar_pantalla3(page, tel: str, msg_fn) -> bool:
         await msg_fn("❌ Botón 'Aceptar y finalizar' no encontrado")
         return False
 
-    # 4. Verificar Pantalla 4
+    # 5. Verificar Pantalla 4 (éxito)
     await page.wait_for_timeout(3000)
     body_final = (await page.inner_text("body")).upper()
+
     if any(kw in body_final for kw in [
         "AGENDADO CON EXITO",
         "SU HORA SE HA AGENDADO",
@@ -330,7 +370,7 @@ async def motor_reserva(
 
     async def foto(page, caption):
         try:
-            ss = await page.screenshot()
+            ss = await page.screenshot(full_page=True)
             await ctx.bot.send_photo(chat_id, ss, caption=f"{tag} {caption}")
         except:
             pass
@@ -342,19 +382,22 @@ async def motor_reserva(
                 args=["--no-sandbox", "--disable-setuid-sandbox", "--disable-gpu"],
             )
             page = await browser.new_page(
-                viewport={"width": 390, "height": 844},
+                viewport={"width": 1280, "height": 900},
                 user_agent=(
-                    "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) "
-                    "AppleWebKit/605.1.15"
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/120.0.0.0 Safari/537.36"
                 ),
             )
             page.set_default_timeout(15000)
 
+            # ── PANTALLA 1: Abrir sitio ──────────────────────────────────────
             await msg("🌐 Abriendo página...")
             await page.goto(URL, wait_until="domcontentloaded", timeout=20000)
             await page.wait_for_timeout(2000)
 
-            await msg(f"🪪 Ingresando RUT {fmt(rut)}...")
+            # ── PANTALLA 1: Ingresar y validar RUT ───────────────────────────
+            await msg(f"🪪 RUT: {fmt(rut)}")
             if not await _ingresar_rut(page, rut):
                 await foto(page, "ERROR: Campo RUT no encontrado")
                 await browser.close()
@@ -367,6 +410,7 @@ async def motor_reserva(
 
             await page.wait_for_timeout(3000)
 
+            # Verificar si el RUT fue aceptado
             rut_sigue = await page.query_selector('input[name="rut"]')
             if rut_sigue and await rut_sigue.is_visible():
                 await foto(page, "RUT RECHAZADO")
@@ -376,8 +420,9 @@ async def motor_reserva(
             await msg("✅ RUT validado")
             horas = await _listar_horas_visibles(page)
             if horas:
-                await msg("Horas en pantalla:\n" + "\n".join(horas[:12]))
+                await msg("Horas:\n" + "\n".join(horas[:12]))
 
+            # ── PANTALLA 2: Loop búsqueda de hora ────────────────────────────
             fin = (
                 ahora() + datetime.timedelta(minutes=5)
                 if test
@@ -390,6 +435,7 @@ async def motor_reserva(
             while ahora() < fin:
                 intentos += 1
 
+                # Auto-recovery
                 rut_visible = await page.query_selector('input[name="rut"]')
                 if rut_visible and await rut_visible.is_visible():
                     await msg("🔄 Reingresando RUT...")
@@ -398,31 +444,32 @@ async def motor_reserva(
                     await page.wait_for_timeout(3000)
                     continue
 
+                # Buscar hora
                 for hora_int in [hora_pref, hora_alt]:
                     btn, texto = await _buscar_boton_hora(page, hora_int, ganadas)
                     if not btn:
                         continue
 
                     await msg(f"🎾 {texto} DISPONIBLE! (intento {intentos})")
-                    for f in formatos_hora(hora_int):
-                        ganadas.add(f)
+                    ganadas.add(hora_int)
 
                     await btn.click()
                     await page.wait_for_timeout(600)
                     await foto(page, f"P2 — {texto} seleccionada")
 
+                    # Click "Ok, programar"
                     ok = await _click_boton(
                         page, ["Ok, programar", "Ok, Programar", "OK", "Programar"]
                     )
                     if not ok:
                         await foto(page, "ERROR: Ok, programar no encontrado")
-                        for f in formatos_hora(hora_int):
-                            ganadas.discard(f)
+                        ganadas.discard(hora_int)
                         continue
 
-                    await page.wait_for_timeout(800)
-                    await foto(page, "P2→P3 cargando...")
+                    await page.wait_for_timeout(1000)
+                    await foto(page, "P2→P3 — cargando confirmación")
 
+                    # ── PANTALLA 3 ────────────────────────────────────────────
                     exito = await _completar_pantalla3(page, tel, msg)
 
                     if exito:
@@ -430,7 +477,7 @@ async def motor_reserva(
                         await browser.close()
                         return f"✅ RESERVA CONFIRMADA — {texto} — {fmt(rut)}"
                     else:
-                        await foto(page, f"❌ Error Pantalla 3")
+                        await foto(page, "❌ Error en Pantalla 3")
                         await browser.close()
                         return f"❌ Falló Pantalla 3 — {texto}"
 
@@ -507,42 +554,38 @@ async def _esperar_y_ejecutar(uid, chat_id, ctx, test):
 
 async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "🎾 Bot Reserva Doble v4.6\n\n"
+        "🎾 Bot Reserva Doble v4.7\n\n"
         "/config  → configurar RUTs y horas\n"
         "/ver     → ver configuración\n"
-        "/test    → test ambas reservas (5 min)\n"
-        "/test1   → solo R1\n"
-        "/test2   → solo R2\n"
+        "/test1   → test solo R1 (5 min)\n"
+        "/test2   → test solo R2 (5 min)\n"
+        "/test    → test ambos (5 min)\n"
         "/auto    → modo real (espera 17:55)\n"
         "/detener → parar\n"
-        "/reset   → reiniciar si el bot se traba\n"
+        "/reset   → reiniciar si se traba\n"
         "/status  → estado actual",
     )
 
 async def cmd_reset(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """Limpia cualquier conversación trabada"""
     uid = update.effective_user.id
-    # Cancelar tareas activas
     if uid in tareas:
         for t in tareas[uid]:
             t.cancel()
         tareas.pop(uid, None)
     estado[uid] = "idle"
     horas_ganadas.pop(uid, None)
-    await update.message.reply_text(
-        "✅ Reset completo.\n\nAhora usa /config para configurar de nuevo."
-    )
+    await update.message.reply_text("✅ Reset completo. Usa /config para configurar.")
     return ConversationHandler.END
 
 async def cmd_ver(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     c = configs.get(uid, {})
     if "r2" not in c or "tel" not in c.get("r2", {}):
-        return await update.message.reply_text("Configuración incompleta. Usa /config")
+        return await update.message.reply_text("Incompleto. Usa /config")
     r1, r2 = c["r1"], c["r2"]
     await update.message.reply_text(
-        f"R1 → {r1['pref']}:00 / {r1['alt']}:00 | {fmt(r1['rut'])}\n"
-        f"R2 → {r2['pref']}:00 / {r2['alt']}:00 | {fmt(r2['rut'])}"
+        f"R1 → {r1['pref']}:00 / {r1['alt']}:00 | {fmt(r1['rut'])} | {r1['tel']}\n"
+        f"R2 → {r2['pref']}:00 / {r2['alt']}:00 | {fmt(r2['rut'])} | {r2['tel']}"
     )
 
 async def cmd_status(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -611,10 +654,9 @@ async def cmd_test2(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def cfg_inicio(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "⚙️ Configuración iniciada\n\n"
+        "⚙️ Configuración\n\n"
         "RUT Reserva 1\n"
-        "Formato: 12345678-9 o 12345678K\n"
-        "(con dígito verificador)"
+        "Ejemplo: 12345678-9"
     )
     return E_RUT1
 
@@ -622,111 +664,81 @@ async def cfg_rut1(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     try:
         rut = validar_rut(update.message.text)
         if not rut:
-            await update.message.reply_text(
-                "❌ RUT inválido\n"
-                "Ingresa con dígito verificador\n"
-                "Ejemplo: 12345678-9"
-            )
+            await update.message.reply_text("❌ RUT inválido. Ejemplo: 12345678-9")
             return E_RUT1
         configs[update.effective_user.id] = {"r1": {"rut": rut}, "r2": {}}
         await update.message.reply_text(
             f"✅ RUT1: {fmt(rut)}\n\n"
             "Hora preferida R1\n"
-            "Solo el número (ej: 9 para las 9:00)"
+            "Solo número (ej: 9 para las 9:00)"
         )
         return E_HORA1
     except Exception as e:
-        logger.error(f"cfg_rut1 error: {e}")
-        await update.message.reply_text("❌ Error procesando RUT. Intenta de nuevo:")
+        logger.error(f"cfg_rut1: {e}")
+        await update.message.reply_text("❌ Error. Intenta de nuevo:")
         return E_RUT1
 
 async def cfg_h1(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     try:
-        texto = update.message.text
-        logger.info(f"cfg_h1 recibió: '{texto}'")
-        h = parsear_hora(texto)
+        h = parsear_hora(update.message.text)
         if h is None:
-            await update.message.reply_text(
-                "❌ Hora inválida\n"
-                "Ingresa solo el número entre 6 y 23\n"
-                "Ejemplo: 9"
-            )
+            await update.message.reply_text("❌ Hora inválida. Número entre 6 y 23 (ej: 9):")
             return E_HORA1
         configs[update.effective_user.id]["r1"]["pref"] = h
         await update.message.reply_text(
-            f"✅ Hora preferida R1: {h}:00\n\n"
-            "Hora alternativa R1\n"
-            "Si la preferida no está disponible\n"
-            "Ejemplo: 10"
+            f"✅ Hora preferida R1: {h}:00\n\nHora alternativa R1 (ej: 10):"
         )
         return E_HORA1_ALT
     except Exception as e:
-        logger.error(f"cfg_h1 error: {e}")
-        await update.message.reply_text(
-            f"❌ Error: {e}\nIngresa solo el número (ej: 9):"
-        )
+        logger.error(f"cfg_h1: {e}")
+        await update.message.reply_text(f"❌ Error: {e}\nEjemplo: 9")
         return E_HORA1
 
 async def cfg_h1a(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     try:
-        texto = update.message.text
-        logger.info(f"cfg_h1a recibió: '{texto}'")
-        h = parsear_hora(texto)
+        h = parsear_hora(update.message.text)
         if h is None:
-            await update.message.reply_text(
-                "❌ Hora inválida. Ingresa número entre 6 y 23:"
-            )
+            await update.message.reply_text("❌ Hora inválida. Número entre 6 y 23:")
             return E_HORA1_ALT
         configs[update.effective_user.id]["r1"]["alt"] = h
         await update.message.reply_text(
             f"✅ Hora alternativa R1: {h}:00\n\n"
-            "Teléfono R1\n"
-            "9 dígitos sin +56\n"
-            "Ejemplo: 912345678"
+            "Teléfono R1 (9 dígitos, ej: 912345678):"
         )
         return E_TEL1
     except Exception as e:
-        logger.error(f"cfg_h1a error: {e}")
-        await update.message.reply_text(f"❌ Error: {e}\nIntenta de nuevo:")
+        logger.error(f"cfg_h1a: {e}")
+        await update.message.reply_text(f"❌ Error: {e}")
         return E_HORA1_ALT
 
 async def cfg_t1(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     try:
         t = update.message.text.strip().replace(" ", "").replace("+56", "")
         if len(t) != 9 or not t.isdigit():
-            await update.message.reply_text(
-                "❌ Debe tener exactamente 9 dígitos\n"
-                "Ejemplo: 912345678"
-            )
+            await update.message.reply_text("❌ Debe tener 9 dígitos. Ejemplo: 912345678")
             return E_TEL1
         configs[update.effective_user.id]["r1"]["tel"] = t
-        await update.message.reply_text(
-            f"✅ Tel R1: {t}\n\n"
-            "RUT Reserva 2\n"
-            "Ejemplo: 87654321-K"
-        )
+        await update.message.reply_text(f"✅ Tel R1: {t}\n\nRUT Reserva 2:")
         return E_RUT2
     except Exception as e:
-        logger.error(f"cfg_t1 error: {e}")
-        await update.message.reply_text(f"❌ Error: {e}\nIntenta de nuevo:")
+        logger.error(f"cfg_t1: {e}")
+        await update.message.reply_text(f"❌ Error: {e}")
         return E_TEL1
 
 async def cfg_rut2(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     try:
         rut = validar_rut(update.message.text)
         if not rut:
-            await update.message.reply_text("❌ RUT inválido. Intenta de nuevo:")
+            await update.message.reply_text("❌ RUT inválido:")
             return E_RUT2
         configs[update.effective_user.id]["r2"]["rut"] = rut
         await update.message.reply_text(
-            f"✅ RUT2: {fmt(rut)}\n\n"
-            "Hora preferida R2\n"
-            "Ejemplo: 19"
+            f"✅ RUT2: {fmt(rut)}\n\nHora preferida R2 (ej: 19):"
         )
         return E_HORA2
     except Exception as e:
-        logger.error(f"cfg_rut2 error: {e}")
-        await update.message.reply_text(f"❌ Error: {e}\nIntenta de nuevo:")
+        logger.error(f"cfg_rut2: {e}")
+        await update.message.reply_text(f"❌ Error: {e}")
         return E_RUT2
 
 async def cfg_h2(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -736,13 +748,11 @@ async def cfg_h2(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❌ Hora inválida. Número entre 6 y 23:")
             return E_HORA2
         configs[update.effective_user.id]["r2"]["pref"] = h
-        await update.message.reply_text(
-            f"✅ Hora preferida R2: {h}:00\n\nHora alternativa R2:"
-        )
+        await update.message.reply_text(f"✅ {h}:00\n\nHora alternativa R2:")
         return E_HORA2_ALT
     except Exception as e:
-        logger.error(f"cfg_h2 error: {e}")
-        await update.message.reply_text(f"❌ Error: {e}\nIntenta de nuevo:")
+        logger.error(f"cfg_h2: {e}")
+        await update.message.reply_text(f"❌ Error: {e}")
         return E_HORA2
 
 async def cfg_h2a(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -752,39 +762,33 @@ async def cfg_h2a(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❌ Hora inválida. Número entre 6 y 23:")
             return E_HORA2_ALT
         configs[update.effective_user.id]["r2"]["alt"] = h
-        await update.message.reply_text(
-            f"✅ Hora alternativa R2: {h}:00\n\nTeléfono R2 (9 dígitos):"
-        )
+        await update.message.reply_text(f"✅ {h}:00\n\nTeléfono R2 (9 dígitos):")
         return E_TEL2
     except Exception as e:
-        logger.error(f"cfg_h2a error: {e}")
-        await update.message.reply_text(f"❌ Error: {e}\nIntenta de nuevo:")
+        logger.error(f"cfg_h2a: {e}")
+        await update.message.reply_text(f"❌ Error: {e}")
         return E_HORA2_ALT
 
 async def cfg_t2(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     try:
         t = update.message.text.strip().replace(" ", "").replace("+56", "")
         if len(t) != 9 or not t.isdigit():
-            await update.message.reply_text("❌ Debe tener 9 dígitos. Ejemplo: 912345678")
+            await update.message.reply_text("❌ Debe tener 9 dígitos:")
             return E_TEL2
         uid = update.effective_user.id
         configs[uid]["r2"]["tel"] = t
         r1, r2 = configs[uid]["r1"], configs[uid]["r2"]
         await update.message.reply_text(
             "✅ CONFIGURACIÓN COMPLETA\n\n"
-            f"R1 → {r1['pref']}:00 / {r1['alt']}:00 | {fmt(r1['rut'])}\n"
-            f"   Tel: {r1['tel']}\n\n"
-            f"R2 → {r2['pref']}:00 / {r2['alt']}:00 | {fmt(r2['rut'])}\n"
-            f"   Tel: {r2['tel']}\n\n"
-            "Comandos:\n"
-            "/test1 → probar R1\n"
-            "/test2 → probar R2\n"
-            "/auto  → reserva real"
+            f"R1 → {r1['pref']}:00 / {r1['alt']}:00 | {fmt(r1['rut'])} | {r1['tel']}\n"
+            f"R2 → {r2['pref']}:00 / {r2['alt']}:00 | {fmt(r2['rut'])} | {r2['tel']}\n\n"
+            "Usa /test1 para probar R1\n"
+            "Usa /auto para reserva real"
         )
         return ConversationHandler.END
     except Exception as e:
-        logger.error(f"cfg_t2 error: {e}")
-        await update.message.reply_text(f"❌ Error: {e}\nIntenta de nuevo:")
+        logger.error(f"cfg_t2: {e}")
+        await update.message.reply_text(f"❌ Error: {e}")
         return E_TEL2
 
 
@@ -822,7 +826,7 @@ def main():
     )
     app.add_handler(conv)
 
-    logger.info("Bot Reserva Doble v4.6 — LISTO")
+    logger.info("Bot Reserva Doble v4.7 — LISTO")
     app.run_polling(drop_pending_updates=True)
 
 
